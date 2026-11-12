@@ -1,0 +1,42 @@
+com.apple.campo	Siri / Apple Intelligence app	Core part of Siri and Apple Intelligence. Siri stops working if this is blocked.	1
+com.apple.Siri.agent	Siri	Core part of Siri: the voice agent and menu bar button. Siri stops working if this is blocked.	1
+com.apple.assistantd	Siri assistant service	Core part of Siri: handles every request. Siri stops working if this is blocked.	1
+com.apple.siriknowledged	Siri knowledge	Optional for Siri: builds on-device knowledge. Siri still works, with less personal answers.	1
+com.apple.siriactionsd	Siri & Shortcuts actions	Needed for Siri to run actions and for Shortcuts automations. Both break if this is blocked.	1
+com.apple.corespeechd	Speech recognition	"Hey Siri" listening and macOS dictation. Both stop working if this is blocked.	1
+com.apple.suggestd	Siri Suggestions	Optional for Siri: suggestions in Spotlight, Mail and Calendar. Siri still works; those suggestions disappear.	1
+com.apple.parsecd	Spotlight web suggestions	Web results in Spotlight and Safari. Local Spotlight search still works.	0
+com.apple.knowledge-agent	Usage knowledge	Learns app usage for suggestions. Safe to block if you don't rely on suggestions.	0
+com.apple.photoanalysisd	Photos analysis	Face and scene recognition in Photos. Safe to block if you don't use Photos.	0
+com.apple.mediaanalysisd	Media analysis	Live Text and Visual Lookup in images. Those features stop working if blocked.	1
+com.apple.AMPLibraryAgent	Music & TV library	Keeps the Music and TV app libraries in sync. Safe to block if you don't use them.	0
+com.apple.gamed	Game Center	Game Center friends and achievements. Safe to block if you don't play Mac games.	0
+com.apple.AirPlayUIAgent	AirPlay controls	AirPlay screen-mirroring menu. Safe to block if you never AirPlay to a TV.	0
+com.apple.newsd	Apple News	Background updates for Apple News and its widgets. Safe to block if you don't use News.	0
+com.apple.weatherd	Weather	Background updates for Weather and its widgets. Weather widgets stop updating if blocked.	0
+com.apple.tipsd	Tips	Shows macOS tips notifications. Safe to block.	0
+com.apple.helpd	Help viewer	Indexes app help books. Safe to block; Help menus may load slower.	0
+com.apple.familycircled	Family Sharing	Family Sharing membership. Block only if you don't use Family Sharing.	1
+com.apple.ScreenTimeAgent	Screen Time	Tracks app usage for Screen Time. Screen Time reports stop if blocked.	1
+com.spotify.client.startuphelper	Spotify launcher	Opens Spotify at login.	0
+com.valvesoftware.steamclean	Steam cleanup	Steam background maintenance task.	0
+com.valvesoftware.steam.ipctool	Steam helper	Steam background helper; Steam starts it itself when opened.	0
+com.google.keystone.agent	Google Software Update	Checks for Chrome / Google app updates in the background.	0
+com.google.keystone.xpcservice	Google update service	Google update helper service.	0
+com.google.GoogleUpdater.wake	Google updater scheduler	Wakes the Google updater periodically.	0
+com.microsoft.update.agent	Microsoft AutoUpdate	Checks for Office updates in the background.	0
+com.microsoft.autoupdate.helper	Microsoft AutoUpdate helper	Installs Office updates. Update Office from its Help menu instead.	0
+com.oracle.java.Java-Updater	Java updater	Checks for Java updates.	0
+com.teamviewer.teamviewer	TeamViewer	Remote-access app agent. Block if you don't use TeamViewer.	0
+com.teamviewer.teamviewer_desktop	TeamViewer desktop	Remote-access desktop agent.	0
+com.teamviewer.teamviewer_service	TeamViewer service	Lets others connect to this Mac. Block if you don't use TeamViewer.	0
+com.teamviewer.Helper	TeamViewer helper	TeamViewer privileged helper.	0
+com.docker.socket	Docker socket	Docker Desktop's socket. Docker Desktop re-enables it when opened.	0
+com.docker.vmnetd	Docker networking	Docker Desktop's network helper.	0
+homebrew.mxcl.mongodb-community	MongoDB	Database server. Start it with: brew services start mongodb-community	0
+com.tuxera.ntfs.agent	Tuxera NTFS	Writes to Windows-formatted drives.	0
+ai.openclaw.gateway	OpenClaw gateway	OpenClaw background gateway. Start it with: openclaw gateway	0
+spotlight	Spotlight search & indexing	Indexes files, mail and notes for Cmd+Space and Finder search. Blocking stops indexing; Cmd+Space file search, Finder and Mail search stop working.	1
+com.teamviewer.desktop	TeamViewer desktop agent	TeamViewer's per-user agent.	0
+com.teamviewer.UninstallerHelper	TeamViewer uninstaller helper	Helper used when uninstalling TeamViewer.	0
+com.teamviewer.UninstallerWatcher	TeamViewer uninstaller watcher	Watches for TeamViewer being removed.	0

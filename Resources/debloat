@@ -1,0 +1,357 @@
+#!/bin/bash
+# debloat — keep unwanted startup items and background helpers switched off.
+#
+#   debloat scan [--tsv] [--extra <catalog>]
+#                       list startup items / background services and how each is handled
+#   debloat apply       enforce the config now (runs at login and every 30 min once installed)
+#   debloat set <login|agent|daemon|feature> <id> <block|keep|clear>
+#                       change how one item is handled (run apply afterwards)
+#                       feature ids: spotlight
+#   debloat system      apply system-level changes from the config (needs sudo)
+#   debloat pending     list system-level changes still waiting for sudo
+#   debloat install     install the background enforcer
+#   debloat uninstall   remove the background enforcer
+#   debloat log         show recent actions
+#
+# Config: ~/.debloat/config
+
+DIR="${DEBLOAT_DIR:-$HOME/.debloat}"
+CONF="$DIR/config"
+LOG="$DIR/debloat.log"
+SEEN="$DIR/seen"
+PENDING="$DIR/pending-enable"
+USAGE="$DIR/usage.tsv"
+SPOTLIGHT_AGENTS="com.apple.corespotlightd com.apple.spotlightknowledged com.apple.spotlightknowledged.updater com.apple.spotlightknowledged.importer"
+ME=$(id -u)
+AGENT_LABEL="local.debloat"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
+QUIET=0
+for a in "$@"; do [ "$a" = "--quiet" ] && QUIET=1; done
+
+say() { [ $QUIET -eq 1 ] || echo "$@"; }
+log() { echo "$(date '+%F %T') $*" >> "$LOG"; say "$@"; }
+
+init_config() {
+  mkdir -p "$DIR"
+  [ -f "$CONF" ] && return
+  cat > "$CONF" <<'EOF'
+# debloat config — one entry per line. After editing, run: debloat apply
+#
+#   keep   <text>               never touch anything whose name contains <text>
+#   login  <name>               remove this login item
+#   agent  <launchd label>      disable this user-level background service
+#   daemon <launchd label>      disable this system-level service (sudo debloat system)
+#   kill   <pattern> | <guard>  stop processes matching <pattern>, unless <guard> is running
+#   fixup  spotify-autostart    keep Spotify's "open at login" setting off
+#   fixup  spotlight-off        keep Spotlight indexing off (sudo debloat system)
+
+keep local.debloat
+EOF
+}
+
+# entries <kind> — values of all "<kind> value" lines in the config
+entries() { grep -E "^$1[[:space:]]" "$CONF" 2>/dev/null | sed -E "s/^$1[[:space:]]+//; s/[[:space:]]+$//"; }
+
+is_kept() {
+  local k
+  while IFS= read -r k; do
+    [ -n "$k" ] && case "$1" in *"$k"*) return 0 ;; esac
+  done < <(entries keep)
+  return 1
+}
+
+is_blocked() { entries login | grep -qxF "$1" || entries agent | grep -qxF "$1" || entries daemon | grep -qxF "$1"; }
+
+login_items() { osascript -e 'tell application "System Events" to get the name of every login item' 2>/dev/null | sed 's/, /\n/g'; }
+
+# Non-Apple launchd labels: plist files on disk plus anything currently loaded
+third_party_labels() {
+  {
+    for f in "$HOME"/Library/LaunchAgents/*.plist /Library/LaunchAgents/*.plist /Library/LaunchDaemons/*.plist; do
+      [ -f "$f" ] && basename "$f" .plist
+    done
+    launchctl list | awk 'NR>1 {print $3}'
+    # Blocked items stay listed even once unloaded, so they can be switched back on
+    entries agent; entries daemon
+  } | grep -v -E '^(com\.apple\.|application\.|com\.openssh\.)' | sort -u
+}
+
+is_disabled() { launchctl print-disabled "$1" 2>/dev/null | grep -q "\"$2\" => disabled"; }
+
+spotlight_blocked() { entries fixup | grep -qx spotlight-off; }
+spotlight_indexing() { mdutil -s / 2>/dev/null | grep -q "Indexing enabled"; }
+
+# disable_agent <label> — disable and stop a user-level agent in both user domains
+disable_agent() {
+  local d
+  for d in gui/$ME user/$ME; do
+    is_disabled $d "$1" || { launchctl disable $d/"$1" && log "disabled $d/$1"; }
+    launchctl print $d/"$1" >/dev/null 2>&1 && launchctl bootout $d/"$1" 2>/dev/null && log "unloaded $d/$1"
+  done
+}
+
+# Memory each item was last seen using, so blocked items can show what they would take
+record_usage() { [ "${2:-0}" -gt 0 ] && printf '%s\t%s\n' "$1" "$2" >> "$USAGE"; }
+compact_usage() {
+  [ -f "$USAGE" ] || return 0
+  awk -F'\t' '{ if ($2 > m[$1]) m[$1] = $2 } END { for (k in m) printf "%s\t%s\n", k, m[k] }' "$USAGE" > "$USAGE.tmp" && mv "$USAGE.tmp" "$USAGE"
+}
+seen_usage() { awk -F'\t' -v l="$1" '$1 == l { print $2; exit }' "$USAGE" 2>/dev/null; }
+
+apply() {
+  init_config
+
+  # 1. Login items
+  local n current
+  current=$(login_items)
+  while IFS= read -r n; do
+    [ -z "$n" ] && continue
+    is_kept "$n" && continue
+    if echo "$current" | grep -qxF "$n"; then
+      osascript -e "tell application \"System Events\" to delete login item \"$n\"" >/dev/null 2>&1 \
+        && log "removed login item: $n"
+    fi
+  done < <(entries login)
+
+  # 2. User-level launch agents (gui = normal session, user = background session)
+  local l
+  while IFS= read -r l; do
+    [ -z "$l" ] && continue
+    is_kept "$l" && continue
+    disable_agent "$l"
+  done < <(entries agent)
+  if spotlight_blocked; then
+    for l in $SPOTLIGHT_AGENTS; do disable_agent "$l"; done
+  fi
+
+  # 3. Stray helper processes — "kill <process pattern> | <skip if this is running>"
+  local pat guard
+  while IFS='|' read -r pat guard; do
+    pat=$(echo "$pat" | sed -E 's/[[:space:]]+$//'); guard=$(echo "$guard" | sed -E 's/^[[:space:]]+//')
+    [ -z "$pat" ] && continue
+    [ -n "$guard" ] && pgrep -f "$guard" >/dev/null && continue
+    pgrep -f "$pat" >/dev/null && pkill -f "$pat" && log "stopped process: $pat"
+  done < <(entries kill)
+
+  # 4. App settings that re-enable autostart
+  if entries fixup | grep -qx spotify-autostart; then
+    local p="$HOME/Library/Application Support/Spotify/prefs"
+    if [ -f "$p" ] && ! grep -q '^app.autostart-mode="off"' "$p"; then
+      grep -v '^app.autostart' "$p" > "$p.tmp"
+      printf '%s\n' 'app.autostart-mode="off"' 'app.autostart-configured=true' >> "$p.tmp"
+      mv "$p.tmp" "$p" && log "turned off Spotify autostart"
+    fi
+  fi
+
+  # 5. System daemons need root — just report
+  local pending
+  pending=$(pending_system | tr '\n' ' ')
+  [ -n "$pending" ] && say "system changes pending (run: sudo debloat system): $pending"
+
+  # 6. Notify once about new startup items that aren't in the config
+  touch "$SEEN"
+  local new=""
+  while IFS= read -r l; do
+    [ -z "$l" ] && continue
+    is_kept "$l" || is_blocked "$l" || grep -qxF "$l" "$SEEN" && continue
+    echo "$l" >> "$SEEN"; new="$new $l"; log "new startup item: $l"
+  done < <(third_party_labels; login_items)
+  [ -n "$new" ] && osascript -e "display notification \"New:$new — open Debloat or run 'debloat scan'\" with title \"debloat: new startup item\"" >/dev/null 2>&1
+  return 0
+}
+
+# System-level changes in the config that still need `sudo debloat system`, one per line
+pending_system() {
+  local l
+  while IFS= read -r l; do
+    [ -z "$l" ] && continue
+    is_disabled system "$l" || echo "$l"
+  done < <(entries daemon)
+  spotlight_blocked && spotlight_indexing && echo "spotlight-indexing"
+  [ -f "$PENDING" ] && sed 's/^/re-enable /' "$PENDING"
+  return 0
+}
+
+# set <kind> <id> <block|keep|clear>
+set_entry() {
+  init_config
+  local kind="$1" id="$2" action="$3" was_blocked=0
+  [ -n "$kind" ] && [ -n "$id" ] || { echo "usage: debloat set <login|agent|daemon|feature> <id> <block|keep|clear>"; exit 1; }
+  if [ "$kind" = feature ]; then
+    [ "$id" = spotlight ] || { echo "unknown feature: $id"; exit 1; }
+    spotlight_blocked && was_blocked=1
+  else
+    is_blocked "$id" && was_blocked=1
+  fi
+
+  # Drop every existing rule for this id, including keep rules that match it
+  awk -v id="$id" -v kind="$kind" '{
+    v = $0; sub(/^[a-z]+[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+    if (kind == "feature" && $1 == "fixup" && v == id "-off") next
+    if (($1 == "login" || $1 == "agent" || $1 == "daemon") && v == id) next
+    if ($1 == "keep" && v != "" && index(id, v) > 0 && v != "local.debloat") next
+    print
+  }' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+
+  case "$action" in
+    block) if [ "$kind" = feature ]; then echo "fixup $id-off" >> "$CONF"; else echo "$kind $id" >> "$CONF"; fi ;;
+    keep)  echo "keep $id" >> "$CONF" ;;
+    clear) ;;
+    *) echo "action must be block, keep or clear"; exit 1 ;;
+  esac
+  log "set $kind $id: $action"
+
+  # Undo the block if the item was blocked before
+  [ "$action" = block ] || [ $was_blocked -eq 0 ] && return 0
+  case "$kind" in
+    agent)
+      launchctl enable gui/$ME/"$id"; launchctl enable user/$ME/"$id"
+      log "re-enabled $id (starts at next login)" ;;
+    daemon | feature)
+      grep -qxF "$id" "$PENDING" 2>/dev/null || echo "$id" >> "$PENDING"
+      if [ "$id" = spotlight ]; then
+        local l
+        for l in $SPOTLIGHT_AGENTS; do launchctl enable gui/$ME/$l; launchctl enable user/$ME/$l; done
+      fi
+      say "re-enabling $id needs admin: sudo debloat system" ;;
+    login)
+      if [ -d "/Applications/$id.app" ]; then
+        osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"/Applications/$id.app\", hidden:false}" >/dev/null 2>&1 \
+          && log "restored login item: $id"
+      fi ;;
+  esac
+}
+
+system_daemons() {
+  [ "$(id -u)" -eq 0 ] || { echo "needs admin: sudo debloat system"; exit 1; }
+  local l
+  while IFS= read -r l; do
+    [ -z "$l" ] && continue
+    launchctl disable system/"$l" && echo "disabled system/$l"
+    launchctl bootout system/"$l" 2>/dev/null && echo "unloaded system/$l"
+  done < <(entries daemon)
+  if spotlight_blocked; then
+    mdutil -a -i off >/dev/null && echo "turned off Spotlight indexing"
+  fi
+  if [ -f "$PENDING" ]; then
+    while IFS= read -r l; do
+      [ -z "$l" ] && continue
+      if [ "$l" = spotlight ]; then
+        mdutil -a -i on >/dev/null && echo "turned Spotlight indexing back on"
+      else
+        launchctl enable system/"$l" && echo "re-enabled system/$l"
+      fi
+    done < "$PENDING"
+    rm -f "$PENDING"
+  fi
+}
+
+status_of() {
+  if is_kept "$1"; then echo kept
+  elif is_blocked "$1"; then echo blocked
+  else echo unknown; fi
+}
+
+# state_of <domain> <label> → "running <mb>" | "loaded 0" | "off 0"
+state_of() {
+  local out pid
+  out=$(launchctl print "$1/$2" 2>/dev/null) || { echo "off 0"; return; }
+  pid=$(echo "$out" | awk '/^\tpid = /{print $3; exit}')
+  if [ -n "$pid" ]; then echo "running $(( $(ps -o rss= -p "$pid" 2>/dev/null || echo 0) / 1024 ))"
+  else echo "loaded 0"; fi
+}
+
+# row <kind> <id> <status> <state> <mb> — print one scan line and remember its memory use
+row() {
+  record_usage "$2" "$5"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$(seen_usage "$2")"
+}
+
+# scan_tsv [catalog] — kind<TAB>id<TAB>status<TAB>state<TAB>mb<TAB>last-seen-mb
+scan_tsv() {
+  local n l kind st mb
+  compact_usage
+  { login_items; entries login; } | awk '!seen[$0]++' | while IFS= read -r n; do
+    [ -z "$n" ] && continue
+    mb=$(ps -Ao rss=,command= | grep -F "/$n.app/Contents/" | grep -v grep | awk '{s+=$1} END{print int(s/1024)}')
+    st=off; [ "${mb:-0}" -gt 0 ] && st=running
+    row login "$n" "$(status_of "$n")" "$st" "${mb:-0}"
+  done
+  third_party_labels | while IFS= read -r l; do
+    [ "$l" = "$AGENT_LABEL" ] && continue
+    if [ -f "/Library/LaunchDaemons/$l.plist" ] || entries daemon | grep -qxF "$l"; then
+      kind=daemon; set -- $(state_of system "$l")
+    else
+      kind=agent; set -- $(state_of gui/$ME "$l")
+      [ "$1" = off ] && set -- $(state_of user/$ME "$l")
+    fi
+    row "$kind" "$l" "$(status_of "$l")" "$1" "$2"
+  done
+  # Spotlight: indexing (mds_stores) plus the app-content index (corespotlightd)
+  mb=$(ps -Ao rss=,comm= | awk '$2 ~ /(mds_stores|corespotlightd|spotlightknowledged)/ {s+=$1} END{print int(s/1024)}')
+  st=off; spotlight_indexing && st=running
+  if spotlight_blocked; then row feature spotlight blocked "$st" "$mb"; else row feature spotlight unknown "$st" "$mb"; fi
+  # Apple services listed in the catalog that exist on this Mac
+  [ -n "$1" ] && [ -f "$1" ] || return 0
+  grep -E '^com\.apple\.' "$1" | cut -f1 | while IFS= read -r l; do
+    [ -f "/System/Library/LaunchAgents/$l.plist" ] || continue
+    set -- $(state_of gui/$ME "$l")
+    row apple "$l" "$(status_of "$l")" "$1" "$2"
+  done
+}
+
+scan() {
+  local tsv=0 extra=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --tsv) tsv=1 ;; --extra) extra="$2"; shift ;; esac
+    shift
+  done
+  init_config
+  if [ $tsv -eq 1 ]; then scan_tsv "$extra"; return; fi
+  scan_tsv "$extra" | awk -F'\t' '
+    { tag = ($3 == "kept") ? "KEEP   " : ($3 == "blocked") ? "BLOCKED" : "UNKNOWN"
+      mem = ($5 > 0) ? sprintf(", %d MB", $5) : ($6 > 0) ? sprintf(", saves ~%d MB", $6) : ""
+      printf "  [%s] %-7s %s (%s%s)\n", tag, $1, $2, $4, mem }'
+  echo
+  echo "UNKNOWN items aren't touched. Block one with: debloat set <kind> <id> block && debloat apply"
+}
+
+install() {
+  init_config
+  cat > "$AGENT_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$AGENT_LABEL</string>
+  <key>ProgramArguments</key>
+  <array><string>$DIR/debloat</string><string>apply</string><string>--quiet</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>10</integer>
+</dict>
+</plist>
+EOF
+  # Everything present today is already reviewed; only future additions trigger a notification
+  { third_party_labels; login_items; } | sort -u > "$SEEN"
+  launchctl bootout gui/$ME/$AGENT_LABEL 2>/dev/null
+  launchctl bootstrap gui/$ME "$AGENT_PLIST" && echo "enforcer installed: runs at login and every 30 min"
+}
+
+uninstall() {
+  launchctl bootout gui/$ME/$AGENT_LABEL 2>/dev/null
+  rm -f "$AGENT_PLIST" && echo "enforcer removed (items already disabled stay disabled; unblock them with debloat set)"
+}
+
+case "${1:-help}" in
+  scan) shift; scan "$@" ;;
+  apply) apply ;;
+  set) set_entry "$2" "$3" "$4" ;;
+  system) system_daemons ;;
+  pending) init_config; pending_system ;;
+  install) install ;;
+  uninstall) uninstall ;;
+  log) tail -n 30 "$LOG" 2>/dev/null || echo "no actions yet" ;;
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac
