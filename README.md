@@ -4,10 +4,9 @@
 
 A small native macOS app (SwiftUI, macOS 14+, Apple Silicon + Intel) backed by a plain bash engine you can also use from the terminal. Nothing is ever uninstalled or deleted: every block is a reversible switch.
 
-<p align="center">
-  <a href="https://github.com/krishalivaibhav/Debloat/raw/main/docs/media/debloat-ad-1080p.mp4"><img src="docs/media/debloat-ad-poster.jpg" width="760" alt="Watch the 40-second Debloat video"></a><br>
-  <sub>▶ <a href="https://github.com/krishalivaibhav/Debloat/raw/main/docs/media/debloat-ad-1080p.mp4">Watch the 40-second tour</a> · <a href="https://github.com/krishalivaibhav/Debloat/releases/tag/v1.1">download in 4K</a></sub>
-</p>
+https://github.com/user-attachments/assets/912cd8a6-36db-425b-a55b-70868c6e8ea5
+
+<p align="center"><sub>40-second tour · <a href="https://github.com/krishalivaibhav/Debloat/releases/tag/v1.1">download in 4K</a></sub></p>
 
 <p align="center">
   <img src="docs/screenshots/memory-dark.png" width="760" alt="Memory page: live usage bar, 5-minute history per app, leftovers from closed apps, top processes and memory saved by blocks">
