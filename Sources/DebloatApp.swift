@@ -91,6 +91,8 @@ final class Model: ObservableObject {
     @Published var destination: String?
     /// Items being moved or deleted right now
     @Published var working: Set<String> = []
+    /// What a move is doing right now, by item path ("Verifying 1,204 of 3,410 files…")
+    @Published var stage: [String: String] = [:]
     /// Per-app memory over time, and the apps currently drawn as lines (with stable color slots)
     @Published var appHistory: [AppSample] = []
     @Published var chartApps: [ChartApp] = []
@@ -258,24 +260,33 @@ final class Model: ObservableObject {
     func moveStorage(_ item: StorageItem) async {
         guard let volume = destinationVolume else { return }
         working.insert(item.path)
-        let (dest, error) = await Task.detached { StorageReader.move(item, to: volume) }.value
+        let report = stageReporter(item.path)
+        let (dest, verified, error) = await Task.detached { StorageReader.move(item, to: volume, stage: report) }.value
         working.remove(item.path)
+        stage[item.path] = nil
         if let dest {
             var moved = item
             moved.verdict = .moved(to: dest, connected: true)
             moved.notes = []
             replace(item, with: moved)
-            showToast("Moved \(item.name) to \(volume.name), \(mbText(item.mb)) freed")
+            showToast("Moved \(item.name) to \(volume.name): \(verified.formatted()) files verified, \(mbText(item.mb)) freed")
         } else {
             showToast(error ?? "Couldn't move \(item.name)", warning: true)
         }
     }
 
+    /// Hands progress from the background copy back to the row, at most a few times a second
+    private func stageReporter(_ path: String) -> (String) -> Void {
+        { text in Task { @MainActor in if self.working.contains(path) { self.stage[path] = text } } }
+    }
+
     func moveBack(_ item: StorageItem) async {
         guard case .moved(let source, true) = item.verdict else { return }
         working.insert(item.path)
-        let error = await Task.detached { StorageReader.moveBack(item, from: source) }.value
+        let report = stageReporter(item.path)
+        let error = await Task.detached { StorageReader.moveBack(item, from: source, stage: report) }.value
         working.remove(item.path)
+        stage[item.path] = nil
         if let error { showToast(error, warning: true); return }
         var back = item
         back.verdict = .movable

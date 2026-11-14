@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// A mounted disk: the Mac's own drive or one plugged into it.
@@ -196,48 +197,108 @@ enum StorageReader {
 
     // MARK: - Moving
 
-    /// Copies to the drive, checks the copy, then swaps the original for a shortcut so paths keep working.
-    /// Returns nil on success, or why it stopped (nothing is lost on any failure path).
-    static func move(_ item: StorageItem, to volume: Volume) -> (dest: String?, error: String?) {
+    /// Copies to the drive, checks every file against the original, then swaps the original for a shortcut
+    /// so paths keep working. `stage` reports each step for the UI. Nothing is deleted until the copy is verified.
+    static func move(_ item: StorageItem, to volume: Volume, stage: @escaping (String) -> Void) -> (dest: String?, verified: Int, error: String?) {
         let fm = FileManager.default
         let relative = item.path.hasPrefix(home) ? String(item.path.dropFirst(home.count + 1)) : String(item.path.dropFirst())
         let dest = "\(volume.path)/\(folderOnDrive)/\(relative)"
-        if fm.fileExists(atPath: dest) { return (nil, "\(volume.name) already has \(tilde(dest)). Rename or remove it first.") }
-        if item.mb + 512 > volume.freeMB { return (nil, "\(volume.name) has \(mbText(volume.freeMB)) free; this needs \(mbText(item.mb)).") }
+        if fm.fileExists(atPath: dest) { return (nil, 0, "\(volume.name) already has \(tilde(dest)). Rename or remove it first.") }
+        if item.mb + 512 > volume.freeMB { return (nil, 0, "\(volume.name) has \(mbText(volume.freeMB)) free; this needs \(mbText(item.mb)).") }
         do { try fm.createDirectory(atPath: (dest as NSString).deletingLastPathComponent, withIntermediateDirectories: true) }
-        catch { return (nil, "Couldn't write to \(volume.name): \(error.localizedDescription)") }
+        catch { return (nil, 0, "Couldn't write to \(volume.name): \(error.localizedDescription)") }
 
+        stage("Copying…")
         // FAT drives turn extended attributes into ._ clutter files; leave them behind
         let flags = volume.isFAT ? ["--norsrc", "--noextattr", "--noacl", "--noqtn"] : []
-        guard run("/usr/bin/ditto", flags + [item.path, dest]) == 0, entryCount(item.path) == entryCount(dest) else {
+        guard run("/usr/bin/ditto", flags + [item.path, dest]) == 0 else {
             try? fm.removeItem(atPath: dest)
-            return (nil, "The copy didn't finish, so \(item.name) stayed where it was.")
+            return (nil, 0, "The copy didn't finish, so \(item.name) stayed where it was.")
         }
+        // "Copy finished" isn't "the copy matches": check every file's size and SHA-256 before touching the original
+        let check = verify(item.path, against: dest, stage: stage)
+        guard check.mismatch == nil else {
+            try? fm.removeItem(atPath: dest)
+            return (nil, 0, "\(check.mismatch!) didn't match after copying, so nothing was deleted and \(item.name) stayed where it was.")
+        }
+        stage("Verified ✓ Replacing with a shortcut…")
         // Rename first: if the original can't be taken away we still have one intact copy, not half of each
         let parked = item.path + ".debloat-moving"
         do { try fm.moveItem(atPath: item.path, toPath: parked) } catch {
             try? fm.removeItem(atPath: dest)
-            return (nil, "macOS wouldn't let Debloat remove the original (\(error.localizedDescription)). Nothing changed.")
+            return (nil, 0, "macOS wouldn't let Debloat remove the original (\(error.localizedDescription)). Nothing changed.")
         }
         do { try fm.createSymbolicLink(atPath: item.path, withDestinationPath: dest) } catch {
             try? fm.moveItem(atPath: parked, toPath: item.path)
             try? fm.removeItem(atPath: dest)
-            return (nil, "Couldn't leave a shortcut behind, so nothing was moved.")
+            return (nil, 0, "Couldn't leave a shortcut behind, so nothing was moved.")
         }
         try? fm.removeItem(atPath: parked)
-        return (dest, nil)
+        return (dest, check.files, nil)
+    }
+
+    /// Compares every file under `source` with its twin under `copy`: same size, same SHA-256, and symlinks
+    /// pointing at the same place. Returns how many files matched, or the first one that didn't.
+    static func verify(_ source: String, against copy: String, stage: (String) -> Void) -> (files: Int, mismatch: String?) {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: source, isDirectory: &isDir) else { return (0, (source as NSString).lastPathComponent) }
+        var rels: [String] = [""]
+        if isDir.boolValue {
+            rels = []
+            let e = fm.enumerator(atPath: source)
+            while let rel = e?.nextObject() as? String {
+                let name = (rel as NSString).lastPathComponent
+                if name == ".DS_Store" { continue }
+                if let type = e?.fileAttributes?[.type] as? FileAttributeType, type == .typeDirectory { continue }
+                rels.append(rel)
+            }
+        }
+        let total = rels.count
+        for (n, rel) in rels.enumerated() {
+            if n % 25 == 0 { stage("Verifying \(n.formatted()) of \(total.formatted()) files…") }
+            let a = rel.isEmpty ? source : "\(source)/\(rel)", b = rel.isEmpty ? copy : "\(copy)/\(rel)"
+            let shown = rel.isEmpty ? (source as NSString).lastPathComponent : rel
+            if let link = try? fm.destinationOfSymbolicLink(atPath: a) {
+                guard (try? fm.destinationOfSymbolicLink(atPath: b)) == link else { return (n, shown) }
+                continue
+            }
+            let sizeA = (try? fm.attributesOfItem(atPath: a)[.size] as? Int) ?? -1
+            let sizeB = (try? fm.attributesOfItem(atPath: b)[.size] as? Int) ?? -2
+            guard sizeA == sizeB, let ha = sha256(a), ha == sha256(b) else { return (n, shown) }
+        }
+        stage("Verified \(total.formatted()) of \(total.formatted()) files")
+        return (total, nil)
+    }
+
+    private static func sha256(_ path: String) -> SHA256.Digest? {
+        guard let h = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? h.close() }
+        var hasher = SHA256()
+        while true {
+            let chunk = autoreleasepool { h.readData(ofLength: 4 << 20) }
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize()
     }
 
     /// Brings a moved item back from the drive and removes it there.
-    static func moveBack(_ item: StorageItem, from source: String) -> String? {
+    static func moveBack(_ item: StorageItem, from source: String, stage: @escaping (String) -> Void) -> String? {
         let fm = FileManager.default
         let free = volumes().first(where: \.isRoot)?.freeMB ?? 0
         if item.mb + 2048 > free { return "This Mac has \(mbText(free)) free; \(item.name) needs \(mbText(item.mb))." }
         let incoming = item.path + ".debloat-moving"
-        guard run("/usr/bin/ditto", [source, incoming]) == 0, entryCount(source) == entryCount(incoming) else {
+        stage("Copying back…")
+        guard run("/usr/bin/ditto", [source, incoming]) == 0 else {
             try? fm.removeItem(atPath: incoming)
             return "The copy didn't finish, so \(item.name) stayed on the drive."
         }
+        if let bad = verify(source, against: incoming, stage: stage).mismatch {
+            try? fm.removeItem(atPath: incoming)
+            return "\(bad) didn't match after copying, so \(item.name) stayed on the drive."
+        }
+        stage("Verified ✓ Putting it back…")
         do {
             try fm.removeItem(atPath: item.path) // the shortcut
             try fm.moveItem(atPath: incoming, toPath: item.path)
@@ -348,19 +409,6 @@ enum StorageReader {
 
     private static func containsSymlink(_ path: String) -> Bool {
         !output("/usr/bin/find", [path, "-type", "l", "-print", "-quit"]).isEmpty
-    }
-
-    /// Entries excluding the clutter macOS adds on its own, so a copy and its original compare equal
-    private static func entryCount(_ path: String) -> Int {
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else { return -1 }
-        guard isDir.boolValue, let e = FileManager.default.enumerator(atPath: path) else { return 1 }
-        var n = 0
-        while let rel = e.nextObject() as? String {
-            let name = (rel as NSString).lastPathComponent
-            if !name.hasPrefix("._") && name != ".DS_Store" { n += 1 }
-        }
-        return n
     }
 
     @discardableResult

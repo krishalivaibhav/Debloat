@@ -213,7 +213,12 @@ private struct StorageRow: View {
     @ViewBuilder
     private func action(_ dest: Volume?) -> some View {
         if model.working.contains(item.path) {
-            ProgressView().controlSize(.small).frame(width: 60)
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(model.stage[item.path] ?? "Starting…")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+                    .contentTransition(.numericText())
+            }
         } else {
             switch item.verdict {
             case .movable:
@@ -248,7 +253,7 @@ private struct StorageRow: View {
             return "Copies it back from \(StorageReader.tilde(to)), then removes it from the drive."
         default:
             let folder = "\(StorageReader.folderOnDrive)/"
-            return "Debloat copies it into “\(folder)” on \(dest?.name ?? "the drive"), checks every file arrived, then replaces it here with a shortcut. Frees \(mbText(item.mb)) on this Mac. It only opens while the drive is plugged in."
+            return "Debloat copies it into “\(folder)” on \(dest?.name ?? "the drive"), checks every file's size and checksum against the original, and only then replaces it here with a shortcut. If anything doesn't match, nothing is deleted. Frees \(mbText(item.mb)) on this Mac. It only opens while the drive is plugged in."
         }
     }
 }
