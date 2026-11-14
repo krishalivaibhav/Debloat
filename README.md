@@ -5,8 +5,8 @@
 A small native macOS app (SwiftUI, macOS 14+, Apple Silicon + Intel) backed by a plain bash engine you can also use from the terminal. Nothing is ever uninstalled or deleted: every block is a reversible switch.
 
 <p align="center">
-  <a href="docs/media/debloat-ad-1080p.mp4"><img src="docs/media/debloat-ad-poster.jpg" width="760" alt="Watch the 40-second Debloat video"></a><br>
-  <sub>▶ <a href="docs/media/debloat-ad-1080p.mp4">Watch the 40-second tour</a></sub>
+  <a href="https://github.com/krishalivaibhav/Debloat/raw/main/docs/media/debloat-ad-1080p.mp4"><img src="docs/media/debloat-ad-poster.jpg" width="760" alt="Watch the 40-second Debloat video"></a><br>
+  <sub>▶ <a href="https://github.com/krishalivaibhav/Debloat/raw/main/docs/media/debloat-ad-1080p.mp4">Watch the 40-second tour</a> · <a href="https://github.com/krishalivaibhav/Debloat/releases/tag/v1.1">download in 4K</a></sub>
 </p>
 
 <p align="center">
