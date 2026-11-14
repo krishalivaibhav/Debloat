@@ -48,7 +48,7 @@ https://github.com/user-attachments/assets/912cd8a6-36db-425b-a55b-70868c6e8ea5
 |---|---|
 | **Memory** | Live usage (updates every 2 s): a stacked bar and legend in Activity Monitor's terms, memory pressure, a 5-minute history chart you can hover, leftovers from closed apps, the apps using the most memory right now, and how much memory your blocks keep free |
 | **Claude** | Every Claude Code session (folder, flags, uptime, memory) and the Claude app, with the commands and MCP servers each one is running. Stop a single command, end a whole session, or clean up commands left running after a session closed |
-| **Storage** | Disks with format and free space, space by type, and large items with whether each can move, what's using it and what depends on it. Pick a drive, then **Move** (copy, verify, leave a shortcut), **Move back**, or **Delete** for caches |
+| **Storage** | Disks with format and free space, space by type, and large items with whether each can move, what's using it and what depends on it. Pick a drive, then **Move** (copy → verify every file's size and SHA-256 → leave a shortcut; a single mismatch cancels it and keeps the original), **Move back** (verified the same way), or **Delete** for caches |
 | **Startup & Background** | Login items and background helpers from other apps. Switch **on** = allowed to start on its own, like System Settings' "Allow in the Background" |
 | **Apple Services** | Built-in features (Spotlight) and macOS helpers (Siri, Photos analysis, Music library, News…). ⚠️ marks ones that turn off something you'd notice |
 
