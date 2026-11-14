@@ -5,6 +5,11 @@
 A small native macOS app (SwiftUI, macOS 14+, Apple Silicon + Intel) backed by a plain bash engine you can also use from the terminal. Nothing is ever uninstalled or deleted: every block is a reversible switch.
 
 <p align="center">
+  <a href="docs/media/debloat-ad-1080p.mp4"><img src="docs/media/debloat-ad-poster.jpg" width="760" alt="Watch the 40-second Debloat video"></a><br>
+  <sub>▶ <a href="docs/media/debloat-ad-1080p.mp4">Watch the 40-second tour</a></sub>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/memory-dark.png" width="760" alt="Memory page: live usage bar, 5-minute history per app, leftovers from closed apps, top processes and memory saved by blocks">
 </p>
 
@@ -14,6 +19,7 @@ A small native macOS app (SwiftUI, macOS 14+, Apple Silicon + Intel) backed by a
 - **Finds leftovers from closed apps.** Widgets, notification and Siri extensions keep running after you quit an app. Debloat lists them and stops them in one click (macOS restarts one if it's actually needed).
 - **Quit memory-heavy apps.** The "Using memory now" list has a ✕ to quit any app in your Applications folder, the same as ⌘Q.
 - **See what Claude is doing.** A Claude page lists Claude Code sessions and the Claude app, the shell commands and MCP servers each is running, and background commands left behind by sessions that ended — each with a Stop button.
+- **Storage manager.** Shows each disk (APFS, ExFAT…) with its free space, what fills it by type (apps, documents, desktop, downloads, media, developer, caches, app data), and every item over 100 MB marked **Safe to move**, **In use** (naming the app that has it open), **Keep here** (with the reason) or **Moved**. It also flags what depends on an item: shell configs, login items and shortcuts that point at it. **Move** copies the item to an external drive, checks every file arrived, then leaves a shortcut so it still opens from the same place; **Move back** reverses it.
 - **Startup & background control.** Every login item and every launch agent/daemon other apps installed, with whether it's running and how much memory it uses. Flip the switch off and it stops starting on its own; the app itself still opens normally.
 - **Apple services, explained.** Spotlight indexing, Photos analysis, Music library, News, Game Center, Siri parts… each with a plain-English description. ⚠️ marks the ones that turn off something you'd notice.
 - **Shows what you saved.** Blocked items remember the most memory they were seen using, so you can see roughly how much your blocks keep free.
@@ -24,6 +30,10 @@ A small native macOS app (SwiftUI, macOS 14+, Apple Silicon + Intel) backed by a
 | Startup & Background | Apple Services |
 |---|---|
 | <img src="docs/screenshots/startup-light.png" alt="Startup and Background page in light mode"> | <img src="docs/screenshots/apple-dark.png" alt="Apple Services page in dark mode"> |
+
+| Storage | Storage (light) |
+|---|---|
+| <img src="docs/screenshots/storage-dark.png" alt="Storage page: disks, usage by type, large items with move verdicts"> | <img src="docs/screenshots/storage-light.png" alt="Storage page in light mode"> |
 
 | Claude | Memory breakdown |
 |---|---|
@@ -39,6 +49,7 @@ A small native macOS app (SwiftUI, macOS 14+, Apple Silicon + Intel) backed by a
 |---|---|
 | **Memory** | Live usage (updates every 2 s): a stacked bar and legend in Activity Monitor's terms, memory pressure, a 5-minute history chart you can hover, leftovers from closed apps, the apps using the most memory right now, and how much memory your blocks keep free |
 | **Claude** | Every Claude Code session (folder, flags, uptime, memory) and the Claude app, with the commands and MCP servers each one is running. Stop a single command, end a whole session, or clean up commands left running after a session closed |
+| **Storage** | Disks with format and free space, space by type, and large items with whether each can move, what's using it and what depends on it. Pick a drive, then **Move** (copy, verify, leave a shortcut), **Move back**, or **Delete** for caches |
 | **Startup & Background** | Login items and background helpers from other apps. Switch **on** = allowed to start on its own, like System Settings' "Allow in the Background" |
 | **Apple Services** | Built-in features (Spotlight) and macOS helpers (Siri, Photos analysis, Music library, News…). ⚠️ marks ones that turn off something you'd notice |
 
@@ -46,7 +57,7 @@ Every row shows whether the item is running, how much memory it uses now, or, if
 roughly how much it would use. Filter a page by text or by **All / Running / Blocked**.
 Changes collect in a bar at the bottom until you hit **Apply** (or **Revert**). 🔒 items ask for your Mac password when applied.
 
-**Shortcuts:** ⌘1–⌘4 switch pages, ⌘R rescans, Return applies pending changes.
+**Shortcuts:** ⌘1–⌘5 switch pages, ⌘R rescans, Return applies pending changes.
 
 ## Install
 
@@ -99,6 +110,8 @@ Sources/StartupPage.swift    Startup & Background and Apple Services pages, rows
 Sources/Theme.swift          Colors, motion curves, button styles, cards, icons
 Sources/ClaudePage.swift     Claude page: sessions, their running commands and MCP servers
 Sources/ClaudeMonitor.swift  Finds Claude sessions and their child processes
+Sources/StoragePage.swift    Storage page: disks, space by type, large items, move/move back
+Sources/StorageMonitor.swift Measures folders, checks open files and references, moves items
 Sources/MemoryMonitor.swift  Reads system memory and per-process usage
 Sources/Engine.swift         Runs the shell engine and parses its scan output
 Sources/Snapshot.swift       --snapshot mode for offscreen UI checks
@@ -119,6 +132,14 @@ enter or respond, exits faster than entrances, nothing scales from zero, buttons
 when pressed, and sections stagger in only on first load. Live data (charts updating every
 2 seconds) isn't animated beyond smooth number changes. Reduce Motion swaps movement for fades.
 Chart colors use a fixed, colorblind-checked categorical order.
+
+## Promo video
+
+`promo/saas-ad/ad.html` is the source of the tour video: the app's real screens as panels in a
+small WebGL scene, rendered frame by frame to 4K with headless Chrome (`render.mjs`). Every beat
+time is in one block at the top, so re-timing for a voiceover is a one-line change; the script is
+in `promo/saas-ad/SCRIPT.md`. Sound effects and music are from Mixkit (free license) and aren't
+included in the repo.
 
 ## License
 

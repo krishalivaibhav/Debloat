@@ -1,2 +1,15 @@
 build/
 .DS_Store
+promo/*/engine/node_modules/
+promo/*/out/stills/
+promo/*/out/
+promo/*/stills/
+promo/*/.hyperframes/
+promo/*/node_modules/
+promo/saas-ad/sounds/
+promo/saas-ad/sounds-web/
+promo/saas-ad/ad.v1.html
+promo/teaser-20261114/engine/
+promo/launch-hf/
+promo/teaser-20261114/
+promo/saas-ad/frames/

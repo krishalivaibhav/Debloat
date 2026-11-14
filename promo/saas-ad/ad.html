@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Debloat ad</title>
+<style>
+  html,body{margin:0;background:#000;height:100%} body{display:flex;align-items:center;justify-content:center} canvas{width:min(100vw,calc(100vh*16/9));aspect-ratio:16/9;display:block}
+</style></head><body><canvas id="c"></canvas>
+<script src="gl3d.js"></script>
+<script>
+// Debloat product ad. Real UI (assets/*.png, the app's own dark-mode snapshots) cut into panels and floated in 3D.
+// Page contract (saas-animation): renderAt(t), TOTAL, ready, EVENTS, ?t=, ?scale=. Render with --gpu.
+const W = 1920, H = 1080, q = new URLSearchParams(location.search), SCALE = parseFloat(q.get('scale') || '1');
+const FONT = 'system-ui, -apple-system, "SF Pro Display", sans-serif';
+
+// ---- Every beat time lives here, so re-timing is a one-line change ----
+const B = {
+  hookText: 0.5, t1: [3.1, 3.8],            // icon squash + flood into the app
+  meetText: 4.1, lift: [6.4, 7.6],           // memory card lifts off the window
+  memText: 8.5, memTap: 9.9, memText2: 10.3, t2: [12.6, 13.3],
+  clText: 13.5, clTap: 15.5, clText2: 15.9, t3: [17.9, 18.6],
+  stText: 18.8, stTap: 20.6, stFly: [20.7, 21.9], stCount: [21.7, 23.0], stText2: 22.0, t4: [24.8, 25.5],
+  upText: 25.7, upTaps: [26.6, 27.15], keep: [27.9, 28.8], upText2: 28.2, t5: [29.8, 30.5],
+  apText: 30.7, t6: [33.6, 34.4],
+  endIcon: 34.4, endName: 35.0, endTag: 35.6, endUrl: [36.2, 38.4],
+};
+const END = 40.5;
+const SHOTS = [   // [start, end, bg]
+  ['hook', 0, 3.8], ['app', 3.8, 13.3], ['claude', 13.3, 18.6], ['storage', 18.6, 25.5], ['startup', 25.5, 30.5], ['apple', 30.5, 34.4], ['end', 34.4, END],
+];
+const TRANS = [   // from shot, window, source rect fn (screen px), next field colour
+  { from: 'hook', w: B.t1, color: '#0d2a63' },
+  { from: 'app', w: B.t2, color: '#5a2414' },
+  { from: 'claude', w: B.t3, color: '#0b4a40' },
+  { from: 'storage', w: B.t4, color: '#2c2470' },
+  { from: 'startup', w: B.t5, color: '#262b38' },
+  { from: 'apple', w: [B.t6[0] + 0.25, B.t6[1]], color: '#1a4aa8' },
+];
+window.EVENTS = [
+  { name: 'hook.icon', t: 0.05 }, { name: 'morph', t: B.t1[0] + 0.2 }, { name: 'lift', t: B.lift[0] },
+  { name: 'tap', t: B.memTap }, { name: 'collapse', t: B.memTap + 0.08 }, { name: 'toast', t: B.memTap + 0.2 },
+  { name: 'morph', t: B.t2[0] + 0.2 }, { name: 'tap', t: B.clTap }, { name: 'collapse', t: B.clTap + 0.08 }, { name: 'toast', t: B.clTap + 0.2 },
+  { name: 'morph', t: B.t3[0] + 0.2 }, { name: 'tap', t: B.stTap }, { name: 'fly', t: B.stFly[0] }, { name: 'land', t: B.stFly[1] }, { name: 'toast', t: B.stFly[1] + 0.05 },
+  { name: 'morph', t: B.t4[0] + 0.2 }, ...B.upTaps.map(t => ({ name: 'tap', t })), { name: 'keep', t: B.keep[0] }, { name: 'land', t: B.keep[1] - 0.25 },
+  { name: 'morph', t: B.t5[0] + 0.2 }, { name: 'collapse', t: B.t6[0] }, { name: 'land', t: B.endIcon + 0.35 }, { name: 'sweep', t: B.endName + 0.3 },
+  ...Array.from({ length: 34 }, (_, i) => ({ name: 'type', t: B.endUrl[0] + i * (B.endUrl[1] - B.endUrl[0]) / 34 })),
+];
+
+const cv = document.getElementById('c'); cv.width = W * SCALE; cv.height = H * SCALE; const MAIN = cv.getContext('2d'); let ctx = MAIN;
+const mk = () => { const c = document.createElement('canvas'); c.width = cv.width; c.height = cv.height; return c; };
+const LAYER = [mk(), mk()], ACC = [mk(), mk()], TMP = mk(), S3 = GL3D.create(W * SCALE, H * SCALE);
+const clamp01 = v => Math.max(0, Math.min(1, v)), lerp = (a, b, k) => a + (b - a) * k, prog = (t, a, b) => clamp01((t - a) / (b - a));
+const outExpo = k => (k = clamp01(k)) >= 1 ? 1 : 1 - Math.pow(2, -10 * k), inOutCubic = k => { k = clamp01(k); return k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2; };
+const outCubic = k => 1 - Math.pow(1 - clamp01(k), 3), sine = k => 0.5 - 0.5 * Math.cos(Math.PI * clamp01(k));
+// Apple-style springs on a clock: critically damped by default; a little overshoot only where a tap pushed it
+const spring = (t, response = 0.4, damping = 1) => { if (t <= 0) return 0; const w = 2 * Math.PI / response;
+  if (damping >= 1) return 1 - (1 + w * t) * Math.exp(-w * t);
+  const wd = w * Math.sqrt(1 - damping * damping); return 1 - Math.exp(-damping * w * t) * (Math.cos(wd * t) + damping * w / wd * Math.sin(wd * t)); };
+const L3 = (a, b, k) => [lerp(a[0], b[0], k), lerp(a[1], b[1], k), lerp(a[2], b[2], k)];
+const TS = 2;
+
+// ---- Textures ----
+const IMG = {};
+function load(name) { return new Promise(r => { const i = new Image(); i.onload = () => { IMG[name] = i; r(); }; i.src = `assets/${name}.png`; }); }
+function panel(w, h, pad, draw) {
+  const c = document.createElement('canvas'); c.width = Math.ceil((w + pad * 2) * TS); c.height = Math.ceil((h + pad * 2) * TS); const p = { c, w: w + pad * 2, h: h + pad * 2, tex: null, key: null };
+  p.redraw = (...a) => { const key = JSON.stringify(a); if (key === p.key && p.tex) return p; p.key = key; const g = c.getContext('2d'); g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, c.width, c.height);
+    g.setTransform(TS, 0, 0, TS, pad * TS, pad * TS); const keep = ctx; ctx = g; draw(...a); ctx = keep; if (p.tex) p.tex.update(); else p.tex = S3.texture(c); return p; };
+  return p;
+}
+const K = 0.9;   // screenshot px → world units
+// A slice of a screenshot as a panel. card: rounded card with shadow + hairline. fix(g): paint corrections in screenshot px
+function slice(img, [x0, y0, x1, y1], { card = false, radius = 24, k = K, fix = null } = {}) {
+  const w = (x1 - x0) * k, h = (y1 - y0) * k, pad = card ? 70 : 0;
+  return panel(w, h, pad, (...a) => {
+    if (card) { ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 50 * TS; ctx.shadowOffsetY = 26 * TS; ctx.beginPath(); ctx.roundRect(0, 0, w, h, radius); ctx.fillStyle = '#1e1e1e'; ctx.fill(); ctx.restore(); }
+    ctx.save(); if (card) { ctx.beginPath(); ctx.roundRect(0, 0, w, h, radius); ctx.clip(); }
+    ctx.drawImage(IMG[img], x0, y0, x1 - x0, y1 - y0, 0, 0, w, h);
+    if (fix) { ctx.scale(k, k); ctx.translate(-x0, -y0); fix(...a); }
+    ctx.restore();
+    if (card) { ctx.beginPath(); ctx.roundRect(0.5, 0.5, w - 1, h - 1, radius); ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1.5; ctx.stroke(); }
+  });
+}
+function cardBg(w, maxH, radius = 24) {   // an empty card whose height animates (rows inside are their own panels)
+  return panel(w, maxH, 70, h => { ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 50 * TS; ctx.shadowOffsetY = 26 * TS;
+    ctx.beginPath(); ctx.roundRect(0, 0, w, h, radius); ctx.fillStyle = '#1e1e1e'; ctx.fill(); ctx.restore();
+    ctx.beginPath(); ctx.roundRect(0.5, 0.5, w - 1, h - 1, radius); ctx.strokeStyle = 'rgba(255,255,255,0.10)'; ctx.lineWidth = 1.5; ctx.stroke(); });
+}
+const P = (pn, pos, extra = {}) => pn && pn.tex ? { tex: pn.tex, w: pn.w, h: pn.h, pos, ...extra } : null;
+// A panel whose top-left (inside its padding) sits at world (x, y): converts to the centre gl3d wants
+const at = (pn, x, y, z, pad = 0) => [x + (pn.w - pad * 2) / 2, y - (pn.h - pad * 2) / 2, z];
+
+function toggle(g, cx, cy, on) {   // the app's switch, in screenshot px (2x)
+  const w = 88, h = 48; g.beginPath(); g.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2);
+  g.fillStyle = on > 0.5 ? `rgba(255,255,255,${0.22 + 0.0 * on})` : '#3e3e3e'; g.fillStyle = mixHex('#3e3e3e', '#5b5b5d', on); g.fill();
+  const kx = lerp(cx - w / 2 + 24, cx + w / 2 - 24, on); g.beginPath(); g.arc(kx, cy, 20, 0, Math.PI * 2); g.fillStyle = '#fff'; g.fill();
+}
+function mixHex(a, b, k) { const pa = [1, 3, 5].map(i => parseInt(a.substr(i, 2), 16)), pb = [1, 3, 5].map(i => parseInt(b.substr(i, 2), 16)); return `rgb(${pa.map((v, i) => Math.round(lerp(v, pb[i], clamp01(k)))).join(',')})`; }
+function chip(g, x, y, text, dot) { g.font = `600 20px ${FONT}`; const tw = g.measureText(text).width; g.beginPath(); g.roundRect(x, y, tw + 44, 30, 15); g.fillStyle = '#2a2a2a'; g.fill();
+  g.beginPath(); g.arc(x + 16, y + 15, 6, 0, 7); g.fillStyle = dot; g.fill(); g.fillStyle = '#a8a8a8'; g.textBaseline = 'middle'; g.fillText(text, x + 28, y + 16); }
+
+const T = {};
+function build() {
+  T.icon = panel(300, 300, 40, () => { ctx.save(); ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 40 * TS; ctx.shadowOffsetY = 20 * TS; ctx.drawImage(IMG.icon, 0, 0, 300, 300); ctx.restore(); }).redraw();
+  // Memory
+  T.window = slice('memory-apps-dark', [0, 0, 1960, 1240], { card: true, radius: 28, k: 0.72 }).redraw();
+  T.hero = slice('memory-apps-dark', [470, 280, 1910, 770], { card: true }).redraw();
+  T.leftBg = cardBg(1296, 360);
+  T.leftHead = slice('memory-apps-dark', [478, 1548, 1902, 1668]).redraw();
+  T.leftRight = slice('memory-apps-dark', [1180, 1668, 1902, 1846]).redraw();   // Mail, Podcasts column
+  T.rowWeather = slice('memory-apps-dark', [478, 1668, 1178, 1752], { fix: p => { if (p) { ctx.fillStyle = `rgba(255,255,255,${0.10 * p})`; ctx.beginPath(); ctx.roundRect(1056, 1690, 112, 56, 16); ctx.fill(); } } });
+  T.rowFind = slice('memory-apps-dark', [478, 1752, 1178, 1834]).redraw();
+  T.rowMsg = slice('memory-apps-dark', [478, 1834, 1178, 1918]).redraw();
+  // Claude: the command row with a personal path is left out entirely
+  T.clBg = cardBg(1296, 400);
+  T.clHead = slice('claude-dark', [478, 488, 1902, 660]).redraw();
+  T.clPdf = slice('claude-dark', [478, 660, 1902, 742], { fix: p => { if (p) { ctx.fillStyle = `rgba(255,255,255,${0.10 * p})`; ctx.beginPath(); ctx.roundRect(1764, 674, 112, 56, 16); ctx.fill(); } } });
+  T.clCaf = slice('claude-dark', [478, 815, 1902, 897]).redraw();
+  // Storage: disks card with live bars + free counter; the games row in its before-state
+  T.disks = slice('storage-dark', [470, 308, 1910, 616], { card: true, fix: (mac, games, free) => {
+    ctx.fillStyle = '#1e1e1e'; ctx.fillRect(1500, 400, 400, 36); ctx.fillRect(1500, 488, 400, 36);
+    ctx.fillRect(586, 446, 1294, 16); ctx.fillRect(586, 535, 1294, 16);
+    ctx.font = `400 21px ${FONT}`; ctx.fillStyle = '#a8a8a8'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText(`${free.toFixed(1)} GB free of 228.3 GB`, 1877, 419); ctx.fillText(`${(719.6 - (45.5 - free)).toFixed(1)} GB free of 953.6 GB`, 1877, 507);
+    for (const [y, f] of [[453, mac], [542, games]]) { ctx.beginPath(); ctx.roundRect(587, y - 5, 1290, 10, 5); ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fill();
+      ctx.beginPath(); ctx.roundRect(587, y - 5, 1290 * f, 10, 5); ctx.fillStyle = '#2f7ff0'; ctx.fill(); }
+  } });
+  T.games = slice('storage-dark', [470, 1172, 1910, 1326], { card: true, radius: 20, fix: (state, press) => {
+    if (state === 'before') { ctx.fillStyle = '#1e1e1e'; ctx.fillRect(826, 1262, 170, 40); chip(ctx, 828, 1268, 'Safe to move', '#30d158');
+      ctx.fillStyle = '#1e1e1e'; ctx.fillRect(1600, 1180, 300, 80); ctx.beginPath(); ctx.roundRect(1650, 1190, 228, 60, 16); ctx.fillStyle = mixHex('#0a84ff', '#4aa3ff', press); ctx.fill();
+      ctx.font = `700 25px ${FONT}`; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Move to GAMES', 1764, 1221);
+      ctx.fillStyle = '#1e1e1e'; ctx.beginPath(); ctx.arc(510, 1238, 11, 0, 7); ctx.fill(); }
+  } });
+  T.items = slice('storage-dark', [470, 1326, 1910, 1720], { card: true, radius: 20 }).redraw();
+  // Startup
+  T.login = slice('startup-dark', [470, 625, 1910, 1302], { card: true, fix: (...on) => {
+    [679, 792, 905, 1019, 1132, 1246].forEach((y, i) => { ctx.fillStyle = '#1e1e1e'; ctx.fillRect(1780, y - 30, 120, 60); toggle(ctx, 1837, y, on[i]); }); } });
+  T.keep = slice('startup-dark', [470, 277, 1910, 430], { card: true, fix: on => { ctx.fillStyle = '#1e1e1e'; ctx.fillRect(1760, 320, 140, 68); toggle(ctx, 1823, 353, on); } });
+  // Apple services rows
+  T.apple = Array.from({ length: 8 }, (_, i) => slice('apple-dark', [470, 880 + i * 147.5, 1910, 880 + (i + 1) * 147.5], { card: true, radius: 18, k: 0.78 }).redraw());
+}
+
+// ---- Shots ----
+const BGS = {
+  hook: ['#2d6fe0', '#1a4aa8', '#0b2457'], app: ['#1f5bc4', '#123a86', '#071c46'], claude: ['#d0703f', '#8e3a1c', '#3a140a'],
+  storage: ['#24a58b', '#0f6f5e', '#06302a'], startup: ['#7a68f0', '#4a3bb0', '#1a1452'], apple: ['#7d879c', '#3f4658', '#181b25'], end: ['#2d6fe0', '#1a4aa8', '#0b2457'],
+};
+function background(g, name, t) {
+  const [a, b, c] = BGS[name]; const dx = Math.sin(t * 0.21) * 80, dy = Math.cos(t * 0.17) * 50;
+  const gr = g.createRadialGradient(W * 0.3 + dx, H * 0.05 + dy, 50, W * 0.5, H * 0.6, W * 0.95); gr.addColorStop(0, a); gr.addColorStop(0.5, b); gr.addColorStop(1, c);
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  const glow = g.createRadialGradient(W * 0.72 - dx * 1.5, H * 0.85, 0, W * 0.72 - dx * 1.5, H * 0.85, 700); glow.addColorStop(0, 'rgba(255,255,255,0.07)'); glow.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = glow; g.fillRect(0, 0, W, H);
+}
+const camAt = (eye, target, extra = {}) => ({ eye, target, fov: 36, focus: Math.hypot(eye[0] - target[0], eye[1] - target[1], eye[2] - target[2]), aperture: 0.55, fog: { near: 3500, far: 9000, color: [0, 0, 0] }, ...extra });
+
+const SCENES = {
+  hook(t) {
+    const D = Math.exp(lerp(Math.log(420), Math.log(1500), outExpo(prog(t, 0, 1.6)))) - 60 * sine(prog(t, 1.6, 3.8));
+    const squash = B.t1[0] < t ? 1 - 0.08 * Math.sin(Math.PI * prog(t, B.t1[0], B.t1[0] + 0.28)) : 1;
+    return { cam: camAt([0, 0, D], [0, 0, 0]), panels: [P(T.icon, [0, -40, 0], { scale: squash, rot: [0, 0.25 * (1 - outExpo(prog(t, 0, 1.6))), 0] })],
+      text: [['Your Mac runs more than you think.', B.hookText, B.t1[0] + 0.1]] };
+  },
+  app(t) {
+    // The window settles, then the memory card lifts toward the camera, then the leftovers card rises into place
+    const open = outExpo(prog(t, B.t1[1] - 0.1, B.t1[1] + 1.4)), lift = inOutCubic(prog(t, B.lift[0], B.lift[1]));
+    const winRy = lerp(-0.32, -0.08, open) - 0.06 * sine(prog(t, 5, 13)), winZ = lerp(-500, 0, open) - 900 * lift;
+    const panels = [P(T.window, [0, -150, winZ], { rot: [0.04, winRy, 0], alpha: 1 - 0.7 * prog(t, 8.5, 9.5) })];
+    // Hero (12.7 GB) comes off the window: from its place on the window to front, then floats up as the leftovers card arrives
+    const leftIn = spring(t - (B.lift[1] - 0.2), 0.9), rise = inOutCubic(prog(t, 7.4, 8.4));
+    const heroPos = L3([-60, 210, winZ + 40], [0, 120 + 320 * rise, 260 - 520 * rise], lift);
+    panels.push(P(T.hero, heroPos, { rot: [0.02, winRy * (1 - lift), 0], bias: 20, alpha: lift > 0 ? 1 - rise : 0 }));
+    // Leftovers card from strips; Weather collapses after the tap and the rows under it spring up
+    const tap = t - B.memTap, gone = spring(tap - 0.05, 0.42), cardY = lerp(-900, -130, leftIn), z = lerp(-400, 140, leftIn) + 60 * sine(prog(t, 9, 13));
+    T.rowWeather.redraw(Math.max(0, 1 - Math.abs(tap) / 0.25) * (tap > -0.25 && tap < 0.3 ? 1 : 0));
+    const x0 = -648, top = cardY + 180, rowH = 75.6, colH = 3 * rowH;
+    const leftH = Math.max(108 + colH - rowH * gone, 108 + 2 * rowH) + 6;
+    T.leftBg.redraw(Math.round(108 + Math.max(colH, colH) + 10));
+    if (t > B.lift[1] - 0.3) {
+      panels.push(P(T.leftBg, at(T.leftBg, x0, top, z, 70), { bias: 0 }));
+      panels.push(P(T.leftHead, at(T.leftHead, x0 + 7, top - 5, z, 0), { bias: 400 }));
+      panels.push(P(T.leftRight, at(T.leftRight, x0 + 7 + 631.8, top - 108, z, 0), { bias: 400 }));
+      const squish = 1 - gone;
+      if (squish > 0.01) panels.push(P(T.rowWeather, at(T.rowWeather, x0 + 7, top - 108 - (1 - squish) * rowH * 0.5 + 0, z, 0), { bias: 410, alpha: squish, scale: lerp(0.94, 1, squish), blur: 2 * gone }));
+      panels.push(P(T.rowFind, at(T.rowFind, x0 + 7, top - 108 - rowH + rowH * gone, z, 0), { bias: 400 }));
+      panels.push(P(T.rowMsg, at(T.rowMsg, x0 + 7, top - 108 - 2 * rowH + rowH * spring(tap - 0.1, 0.45), z, 0), { bias: 400 }));
+    }
+    const camY = lerp(0, -60, inOutCubic(prog(t, 6.5, 9))), camZ = 1550 - 120 * sine(prog(t, 3.8, 13.3));
+    const tapWorld = [x0 + 7 + (1112 - 478) * K, top - 108 - (1718 - 1668) * K, z + 2];
+    return { cam: camAt([90 * sine(prog(t, 3.8, 13.3)) - 45, camY, camZ], [0, camY - 20, 0]), panels,
+      tap: { at: B.memTap, world: tapWorld, from: [W * 0.62, H + 80], arrive: B.memTap - 1.0, leave: B.t2[0] },
+      toast: ["Stopped Weather's leftovers, 37 MB freed", B.memTap + 0.2, B.t2[0] - 0.05],
+      morphFrom: () => ({ world: [x0 + 7 + (1730 - 478) * K, top - (1588 - 1548) * K, z], w: 260, h: 60, r: 30 }),
+      text: [['Meet Debloat.', B.meetText, B.lift[0] + 0.3], ['See where your memory goes.', B.memText, B.memTap - 0.25], ['Stop what closed apps leave behind.', B.memText2, B.t2[0] + 0.1]] };
+  },
+  claude(t) {
+    const s = t - B.t2[1], tap = t - B.clTap, gone = spring(tap - 0.05, 0.42), z = 120 * sine(prog(t, B.t2[1], B.t3[1]));
+    const x0 = -648, top = 230, head = 154.8, rowH = 73.8;
+    T.clPdf.redraw(Math.max(0, 1 - Math.abs(tap) / 0.25) * (tap > -0.25 && tap < 0.3 ? 1 : 0));
+    const h = head + rowH * (2 - gone) + 20;
+    T.clBg.redraw(Math.round(h));
+    const panels = [P(T.clBg, at(T.clBg, x0, top, z, 70)), P(T.clHead, at(T.clHead, x0 + 7, top - 5, z, 0), { bias: 400 })];
+    if (gone < 0.99) panels.push(P(T.clPdf, at(T.clPdf, x0 + 7, top - head, z, 0), { bias: 410, alpha: 1 - gone, scale: lerp(1, 0.94, gone), blur: 2 * gone }));
+    panels.push(P(T.clCaf, at(T.clCaf, x0 + 7, top - head - rowH + rowH * spring(tap - 0.1, 0.45), z, 0), { bias: 400 }));
+    const ang = lerp(0.18, -0.1, sine(prog(t, B.t2[1], B.t3[1]))), D = 1650 - 200 * outExpo(prog(t, B.t2[1], B.t2[1] + 1.5));
+    const tgt = [0, 40, 0];
+    return { cam: camAt([Math.sin(ang) * D, 40 + 60 * Math.sin(ang), Math.cos(ang) * D], tgt), panels,
+      tap: { at: B.clTap, world: [x0 + 7 + (1820 - 478) * K, top - head - (701 - 660) * K, z + 2], from: [W + 80, H * 0.7], arrive: B.clTap - 1.0, leave: B.t3[0] },
+      toast: ['Stopped server-pdf, 14 MB freed', B.clTap + 0.2, B.t3[0] - 0.05],
+      morphFrom: () => ({ world: [0, top - h / 2, z], w: 1296, h, r: 24 }),
+      text: [['Every Claude session, in one place.', B.clText, B.clTap - 0.25], ["End the tasks you don't need.", B.clText2, B.t3[0] + 0.1]] };
+  },
+  storage(t) {
+    const fly = inOutCubic(prog(t, ...B.stFly)), count = outCubic(prog(t, ...B.stCount)), press = Math.max(0, 1 - Math.abs(t - B.stTap) / 0.2);
+    const free = lerp(19.2, 45.5, count);
+    T.disks.redraw(lerp(0.916, 0.80, count), lerp(0.218, 0.245, count), free);
+    T.games.redraw(t < B.stTap + 0.1 ? 'before' : 'after', +press.toFixed(2));
+    const zDisk = 0, disksPos = [0, 190, zDisk], gamesHome = [0, -100, 120], gamesDest = [-80, 190 - 100, zDisk + 10];
+    // The row lifts toward the camera, then arcs into the GAMES drive, shrinking as it goes in
+    const arc = Math.sin(Math.PI * fly) * 260, gp = L3(gamesHome, gamesDest, fly); gp[2] += arc; gp[1] += arc * 0.4;
+    const panels = [P(T.disks, disksPos), P(T.items, [0, -390, -60], { alpha: 1 - fly * 0.4 })];
+    if (fly < 0.98) panels.push(P(T.games, gp, { scale: lerp(1, 0.25, Math.pow(fly, 2)), alpha: 1 - prog(fly, 0.75, 1), rot: [0, 0, -0.06 * Math.sin(Math.PI * fly)], bias: 30 }));
+    const k = sine(prog(t, B.t3[1], B.t4[1]));
+    const cam = camAt([lerp(-220, 160, k), lerp(160, 60, k), 1700 - 150 * outExpo(prog(t, B.t3[1], B.t3[1] + 1.5))], [0, 40, 0]);
+    return { cam, panels, glow: t > B.stFly[1] - 0.05 ? { world: [-80, 90, 20], t: t - B.stFly[1] } : null,
+      tap: { at: B.stTap, world: [(1764 - 1190) * K, -100, 122 + 2], from: [W * 0.8, H + 80], arrive: B.stTap - 1.0, leave: B.t4[0] },
+      toast: ['Moved games to GAMES, 26.3 GB freed', B.stFly[1] + 0.05, B.t4[0] - 0.05],
+      morphFrom: () => ({ world: disksPos, w: 1296, h: 277, r: 24 }),
+      text: [['Move big files off your Mac.', B.stText, B.stText2 - 0.3], ['They still open from the same place.', B.stText2, B.t4[0] + 0.1]] };
+  },
+  startup(t) {
+    const flip = B.upTaps.map(tt => spring(t - tt, 0.38, 0.72));
+    T.login.redraw(...[1 - flip[0], 1 - flip[1], 0, 0, 0, 0].map(v => +v.toFixed(3)));
+    const kin = spring(t - B.keep[0], 0.8), kz = lerp(-1200, 330, kin);
+    T.keep.redraw(+clamp01(spring(t - (B.keep[1] - 0.25), 0.38, 0.72)).toFixed(3));
+    const panels = [P(T.login, [0, -40 + 120 * kin, -200 * kin], { alpha: 1 - 0.35 * kin, rot: [-0.05 * kin, 0, 0] })];
+    if (t > B.keep[0]) panels.push(P(T.keep, [0, lerp(-500, -10, kin), kz], { bias: 50, rot: [lerp(0.5, 0, kin), 0, 0], sheen: 0.18, sheenPos: lerp(-0.3, 1.3, prog(t, B.keep[1] - 0.2, B.keep[1] + 0.6)) }));
+    const k = sine(prog(t, B.t4[1], B.t5[1]));
+    return { cam: camAt([lerp(180, -120, k), lerp(-60, 80, k), 1700 - 100 * k], [0, 0, 0]), panels,
+      tap: { at: B.upTaps, world: [679, 792].map(y => [(1837 - 1190) * K, -40 + (965 - y) * K, 2]), from: [W + 80, H * 0.55], arrive: B.upTaps[0] - 0.9, leave: B.keep[0] - 0.2 },
+      toast: null, morphFrom: () => ({ world: [0, -10, kz], w: 1296, h: 138, r: 24 }),
+      text: [['Switch off what starts on its own.', B.upText, B.upText2 - 0.25], ['Debloat keeps it off.', B.upText2, B.t5[0] + 0.1]] };
+  },
+  apple(t) {
+    // Rows sweep in from alternate sides into a tilted stack; the camera travels down it one way only
+    const panels = T.apple.map((pn, i) => { const a = spring(t - (B.t5[1] - 0.25 + i * 0.09), 0.7), side = i % 2 ? 1 : -1;
+      const coll = inOutCubic(prog(t, B.t6[0], B.t6[1] - 0.1));
+      const home = [0, 360 - i * 128, -i * 30], from = [side * 1900, home[1], home[2] - 600], p = L3(from, home, a);
+      return P(pn, L3(p, [0, -40, 0], coll), { rot: [0, 0, 0], scale: lerp(1, 0.2, coll), alpha: a * (1 - prog(coll, 0.6, 1)) }); });
+    const k = sine(prog(t, B.t5[1], B.t6[1]));
+    return { cam: camAt([lerp(-380, -160, k), lerp(420, -120, k), 1500 + 300 * k], [0, lerp(300, -150, k), -120]), panels,
+      morphFrom: () => ({ world: [0, -40, 0], w: 300, h: 300, r: 66 }),
+      text: [["Even Apple's own services, explained.", B.apText, B.t6[0] + 0.1]] };
+  },
+  end(t) {
+    const land = spring(t - B.endIcon, 0.55);
+    return { cam: camAt([0, 0, 1500], [0, 0, 0], { aperture: 0 }), panels: [P(T.icon, [0, 180 + (1 - land) * -120, (1 - land) * -900], { scale: 0.62, alpha: clamp01(land * 1.6) })], end: true };
+  },
+};
+
+// ---- 2D layers: words, cursor, taps, toasts, end card ----
+function words(g, text, t0, t1, t, y = 150, size = 64) {
+  if (t < t0 - 0.01 || t > t1 + 0.4) return;
+  g.save(); g.font = `600 ${size}px ${FONT}`; g.letterSpacing = `${-0.03 * size}px`; g.textBaseline = 'alphabetic';
+  const ws = text.split(' '), widths = ws.map(w => g.measureText(w + ' ').width), total = widths.reduce((a, b) => a + b, 0) - g.measureText(' ').width;
+  let x = (W - total) / 2;
+  ws.forEach((w, i) => { const a = outCubic(prog(t, t0 + i * 0.075, t0 + i * 0.075 + 0.5)), out = outCubic(prog(t, t1 + i * 0.03, t1 + i * 0.03 + 0.3));
+    const k = a * (1 - out); if (k > 0.002) { g.globalAlpha = k; g.filter = `blur(${(1 - a) * 12 + out * 10}px)`;
+      const grad = g.createLinearGradient(0, y - size * 0.75, 0, y + 6); grad.addColorStop(0, '#ffffff'); grad.addColorStop(0.55, '#ffffff'); grad.addColorStop(1, '#c9d2e6');
+      g.fillStyle = grad; g.fillText(w, x, y + (1 - a) * 22 - out * 14); }
+    x += widths[i]; });
+  g.restore();
+}
+function arrow(g, x, y, s) {
+  g.save(); g.translate(x, y); g.scale(s * 2.3, s * 2.3); g.shadowColor = 'rgba(0,0,0,0.35)'; g.shadowBlur = 10; g.shadowOffsetY = 4;
+  g.beginPath(); g.moveTo(0, 0); g.lineTo(0, 22); g.lineTo(5.2, 17); g.lineTo(9, 25.5); g.lineTo(12.6, 24); g.lineTo(9, 15.8); g.lineTo(16, 15.8); g.closePath();
+  g.fillStyle = '#fff'; g.fill(); g.shadowColor = 'transparent'; g.lineWidth = 1.3; g.strokeStyle = '#fff'; g.stroke();
+  g.beginPath(); g.moveTo(1.6, 3.6); g.lineTo(1.6, 18.2); g.lineTo(5.6, 14.4); g.lineTo(9.6, 22.8); g.lineTo(10.9, 22.2); g.lineTo(7, 14); g.lineTo(12.3, 14); g.closePath(); g.fillStyle = '#111'; g.fill();
+  g.restore();
+}
+function cursorLayer(g, sc, t, cam) {
+  const tp = sc.tap; if (!tp || t < tp.arrive || t > tp.leave + 0.8) return;
+  const taps = Array.isArray(tp.at) ? tp.at : [tp.at], worlds = Array.isArray(tp.world[0]) ? tp.world : [tp.world];
+  const pts = worlds.map(w => S3.project(w, cam).map(v => v / SCALE));
+  // Critically damped glide to each target in turn, then drift away after the last tap
+  let pos = tp.from.slice(), prevT = tp.arrive;
+  taps.forEach((tt, i) => { const k = spring(t - prevT, i ? 0.42 : 0.75); pos = [lerp(pos[0], pts[i][0], k), lerp(pos[1], pts[i][1], k)]; prevT = tt + 0.12; });
+  const away = outCubic(prog(t, tp.leave, tp.leave + 0.7)); pos = [lerp(pos[0], pos[0] + 260, away), lerp(pos[1], H + 120, away)];
+  let press = 0; taps.forEach(tt => { press = Math.max(press, Math.max(0, 1 - Math.abs(t - tt) / 0.12)); });
+  taps.forEach((tt, i) => { const r = t - tt; if (r < 0 || r > 0.7) return; const [x, y] = pts[i];
+    g.save(); g.globalAlpha = 0.55 * (1 - outCubic(r / 0.7)); g.lineWidth = 3; g.strokeStyle = '#ffffff'; g.beginPath(); g.arc(x, y, 14 + 62 * outCubic(r / 0.7), 0, 7); g.stroke();
+    g.globalAlpha = 0.22 * (1 - r / 0.35); if (r < 0.35) { g.fillStyle = '#ffffff'; g.beginPath(); g.arc(x, y, 26 + 20 * outCubic(r / 0.35), 0, 7); g.fill(); }
+    for (let k = 0; k < 8; k++) { const a = k / 8 * Math.PI * 2 + 0.3, d = 30 + 46 * outCubic(r / 0.5); g.globalAlpha = Math.max(0, 0.9 * (1 - r / 0.5));
+      g.fillStyle = k % 2 ? '#7cc4ff' : '#ffffff'; g.beginPath(); g.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, 3.2, 0, 7); g.fill(); }
+    g.restore(); });
+  g.save(); g.globalAlpha = clamp01(prog(t, tp.arrive, tp.arrive + 0.25)) * (1 - prog(away, 0.6, 1)); arrow(g, pos[0], pos[1], 1 - 0.14 * press); g.restore();
+}
+function toastLayer(g, sc, t) {
+  const ts = sc.toast; if (!ts) return; const [text, t0, t1] = ts; if (t < t0 || t > t1 + 0.3) return;
+  const a = spring(t - t0, 0.45, 0.82), out = outCubic(prog(t, t1, t1 + 0.25)); if (a <= 0) return;
+  g.save(); g.font = `600 30px ${FONT}`; const tw = g.measureText(text).width, w = tw + 120, h = 74, x = (W - w) / 2, y = H - 150 + (1 - a) * 90 + out * 30;
+  g.globalAlpha = clamp01(a * 1.4) * (1 - out); g.translate(W / 2, y + h / 2); g.scale(lerp(0.92, 1, clamp01(a)), lerp(0.92, 1, clamp01(a))); g.translate(-W / 2, -(y + h / 2));
+  g.shadowColor = 'rgba(0,0,0,0.35)'; g.shadowBlur = 40; g.shadowOffsetY = 14; g.beginPath(); g.roundRect(x, y, w, h, h / 2); g.fillStyle = 'rgba(38,38,42,0.88)'; g.fill(); g.shadowColor = 'transparent';
+  const edge = g.createLinearGradient(0, y, 0, y + h); edge.addColorStop(0, 'rgba(255,255,255,0.28)'); edge.addColorStop(1, 'rgba(255,255,255,0.04)'); g.strokeStyle = edge; g.lineWidth = 1.5; g.stroke();
+  const cx = x + 50, cy = y + h / 2, ck = outCubic(prog(t, t0 + 0.12, t0 + 0.45)); g.beginPath(); g.arc(cx, cy, 17, 0, 7); g.fillStyle = '#30d158'; g.fill();
+  g.beginPath(); g.moveTo(cx - 8, cy + 0.5); g.lineTo(cx - 2.5, cy + 6); const ex = lerp(cx - 2.5, cx + 8.5, ck), ey = lerp(cy + 6, cy - 6.5, ck); if (ck > 0) g.lineTo(ex, ey);
+  g.strokeStyle = '#fff'; g.lineWidth = 3.4; g.lineCap = 'round'; g.lineJoin = 'round'; g.stroke();
+  g.fillStyle = '#fff'; g.textBaseline = 'middle'; g.fillText(text, x + 84, cy + 1); g.restore();
+}
+function glowLayer(g, sc, cam) {   // a soft flash where the moved row lands in the drive
+  if (!sc.glow || sc.glow.t > 0.9) return; const [x, y] = S3.project(sc.glow.world, cam).map(v => v / SCALE), k = sc.glow.t / 0.9;
+  const r = g.createRadialGradient(x, y, 0, x, y, 260 + 200 * k); r.addColorStop(0, `rgba(120,190,255,${0.45 * (1 - k)})`); r.addColorStop(1, 'rgba(120,190,255,0)');
+  g.fillStyle = r; g.fillRect(0, 0, W, H);
+}
+function endLayer(g, t) {
+  const name = outCubic(prog(t, B.endName, B.endName + 0.6)), tag = outCubic(prog(t, B.endTag, B.endTag + 0.6)), url = 'github.com/krishalivaibhav/Debloat';
+  g.save(); g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  g.globalAlpha = name; g.filter = `blur(${(1 - name) * 12}px)`; g.font = `700 120px ${FONT}`; g.letterSpacing = '-3.6px'; g.fillStyle = '#fff'; g.fillText('Debloat', W / 2, 640 + (1 - name) * 22);
+  g.filter = 'none';
+  const sw = prog(t, B.endName + 0.3, B.endName + 1.2); if (sw > 0 && sw < 1) {   // light sweep across the wordmark
+    g.save(); g.globalCompositeOperation = 'source-atop'; const sx = lerp(W / 2 - 420, W / 2 + 420, inOutCubic(sw)), lg = g.createLinearGradient(sx - 120, 0, sx + 120, 0);
+    lg.addColorStop(0, 'rgba(255,255,255,0)'); lg.addColorStop(0.5, 'rgba(160,210,255,0.9)'); lg.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = lg; g.globalAlpha = 1;
+    g.font = `700 120px ${FONT}`; g.fillText('Debloat', W / 2, 640); g.restore(); }
+  g.globalAlpha = tag; g.filter = `blur(${(1 - tag) * 10}px)`; g.font = `400 40px ${FONT}`; g.letterSpacing = '-0.4px'; g.fillStyle = 'rgba(255,255,255,0.86)'; g.fillText('Free and open source, for your Mac.', W / 2, 712 + (1 - tag) * 16);
+  g.filter = 'none';
+  const box = spring(t - (B.endUrl[0] - 0.35), 0.5); if (box > 0) {   // a search box that types the URL
+    const bw = 860, bh = 84, bx = (W - bw) / 2, by = 790 + (1 - box) * 30; g.globalAlpha = clamp01(box * 1.3);
+    g.shadowColor = 'rgba(0,0,0,0.3)'; g.shadowBlur = 30; g.shadowOffsetY = 10; g.beginPath(); g.roundRect(bx, by, bw, bh, bh / 2); g.fillStyle = '#ffffff'; g.fill(); g.shadowColor = 'transparent';
+    g.beginPath(); g.arc(bx + 50, by + 40, 13, 0, 7); g.moveTo(bx + 59, by + 50); g.lineTo(bx + 68, by + 59); g.strokeStyle = '#8a93a6'; g.lineWidth = 4; g.lineCap = 'round'; g.stroke();
+    const n = Math.floor(url.length * prog(t, ...B.endUrl)), shown = url.slice(0, n); g.font = `500 36px ${FONT}`; g.letterSpacing = '0px'; g.textAlign = 'left'; g.fillStyle = '#0d2a63';
+    g.fillText(shown, bx + 92, by + 54); if (Math.floor(t * 2.2) % 2 === 0 || t < B.endUrl[1]) { const cx = bx + 94 + g.measureText(shown).width; g.fillRect(cx, by + 22, 3, 42); }
+  }
+  g.restore();
+}
+
+// ---- Compose: shots, shape-morph transitions, motion blur ----
+const SUB = 8, SHUTTER = 0.5 / 25;
+function shotAt(t) { return SHOTS.find(s => t >= s[1] && t < s[2]) || SHOTS[SHOTS.length - 1]; }
+function drawShot(name, t, target, acc) {
+  const A = acc.getContext('2d'); A.setTransform(1, 0, 0, 1, 0, 0); A.globalAlpha = 1; A.clearRect(0, 0, acc.width, acc.height);
+  let sc = null, cam = null;
+  for (let i = 0; i < SUB; i++) { const ts = Math.max(0, t + (i / (SUB - 1) - 0.5) * SHUTTER); sc = SCENES[name](ts); cam = sc.cam;
+    const g = TMP.getContext('2d'); g.setTransform(SCALE, 0, 0, SCALE, 0, 0); g.globalAlpha = 1; g.filter = 'none'; background(g, name, ts);
+    g.setTransform(1, 0, 0, 1, 0, 0); g.drawImage(S3.render(sc.panels, cam), 0, 0); A.globalAlpha = 1 / (i + 1); A.drawImage(TMP, 0, 0); }
+  sc = SCENES[name](t); cam = sc.cam;
+  const g = target.getContext('2d'); g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.filter = 'none'; g.drawImage(acc, 0, 0);
+  g.setTransform(SCALE, 0, 0, SCALE, 0, 0); glowLayer(g, sc, cam); (sc.text || []).forEach(([s, a, b]) => words(g, s, a, b, t)); toastLayer(g, sc, t); cursorLayer(g, sc, t, cam);
+  if (sc.end) endLayer(g, t);
+  return { sc, cam };
+}
+function render(t) {
+  if (!built) { build(); built = true; }
+  const shot = shotAt(t), tr = TRANS.find(x => t >= x.w[0] && t < x.w[1] + 0.6);
+  const out = MAIN; out.setTransform(1, 0, 0, 1, 0, 0);
+  if (tr && t < tr.w[1]) {   // the source object squashes, then grows to fill the frame with the next field colour, and the next shot eases in inside it
+    const { sc, cam } = drawShot(tr.from, t, LAYER[0], ACC[0]); out.drawImage(LAYER[0], 0, 0);
+    const src = sc.morphFrom ? sc.morphFrom() : { world: [0, 0, 0], w: 300, h: 300, r: 60 };
+    const [cx, cy] = S3.project(src.world, cam).map(v => v / SCALE), D = Math.hypot(cam.eye[0] - src.world[0], cam.eye[1] - src.world[1], cam.eye[2] - src.world[2]);
+    const px = 1080 / (2 * D * Math.tan(18 * Math.PI / 180)), sw = src.w * px, sh = src.h * px;
+    const k = prog(t, tr.w[0], tr.w[1]), squash = 1 - 0.08 * Math.sin(Math.PI * prog(k, 0, 0.3)), grow = inOutCubic(prog(k, 0.22, 1));
+    const w = lerp(sw * squash, W + 200, grow), h = lerp(sh * squash, H + 200, grow), x = lerp(cx, W / 2, grow), y = lerp(cy, H / 2, grow), r = lerp(src.r * px, 0, grow);
+    const nextName = SHOTS[SHOTS.findIndex(s => s[0] === tr.from) + 1][0];
+    out.save(); out.setTransform(SCALE, 0, 0, SCALE, 0, 0); out.beginPath(); out.roundRect(x - w / 2, y - h / 2, w, h, r); out.fillStyle = tr.color; out.globalAlpha = clamp01(grow * 3); out.fill();
+    if (grow > 0.55) { out.clip(); drawShot(nextName, Math.max(t, tr.w[1] - 0.001), LAYER[1], ACC[1]); out.globalAlpha = prog(grow, 0.55, 1); out.setTransform(1, 0, 0, 1, 0, 0);
+      const s = lerp(0.93, 1, prog(grow, 0.55, 1)); out.translate(cv.width / 2, cv.height / 2); out.scale(s, s); out.translate(-cv.width / 2, -cv.height / 2); out.drawImage(LAYER[1], 0, 0); }
+    out.restore();
+  } else if (tr) {   // just after the morph: keep easing the new shot to full size
+    drawShot(shot[0], t, LAYER[1], ACC[1]); const s = lerp(0.985, 1, outCubic(prog(t, tr.w[1], tr.w[1] + 0.6)));
+    out.fillStyle = '#000'; out.fillRect(0, 0, cv.width, cv.height); out.translate(cv.width / 2, cv.height / 2); out.scale(s, s); out.translate(-cv.width / 2, -cv.height / 2); out.drawImage(LAYER[1], 0, 0); out.setTransform(1, 0, 0, 1, 0, 0);
+  } else { drawShot(shot[0], t, LAYER[0], ACC[0]); out.drawImage(LAYER[0], 0, 0); }
+}
+let built = false;
+window.TOTAL = END; window.renderAt = t => render(t);
+window.ready = Promise.all(['icon', 'memory-apps-dark', 'claude-dark', 'storage-dark', 'startup-dark', 'apple-dark'].map(load)).then(() => {
+  if (q.has('t')) render(parseFloat(q.get('t'))); else (function tick(n) { render((n / 1000) % END); requestAnimationFrame(tick); })(0); return true; });
+</script></body></html>

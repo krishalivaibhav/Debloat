@@ -32,7 +32,7 @@ struct DebloatApp: App {
                         .keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
                 }
                 Divider()
-                Button("Rescan") { Task { await model.scan() } }
+                Button("Rescan") { Task { await model.rescan() } }
                     .keyboardShortcut("r")
                     .disabled(model.busy)
             }
@@ -41,13 +41,14 @@ struct DebloatApp: App {
 }
 
 enum Page: String, CaseIterable, Identifiable, Hashable {
-    case memory, claude, startup, apple
+    case memory, claude, storage, startup, apple
     var id: Self { self }
 
     var title: String {
         switch self {
         case .memory: return "Memory"
         case .claude: return "Claude"
+        case .storage: return "Storage"
         case .startup: return "Startup & Background"
         case .apple: return "Apple Services"
         }
@@ -57,6 +58,7 @@ enum Page: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .memory: return "memorychip"
         case .claude: return "sparkle"
+        case .storage: return "internaldrive"
         case .startup: return "power"
         case .apple: return "apple.logo"
         }
@@ -83,6 +85,12 @@ final class Model: ObservableObject {
     @Published var processes: [ProcessMemory] = []
     @Published var leftovers: [ProcessMemory] = []
     @Published var claude = ClaudeSnapshot()
+    @Published var storage = StorageSnapshot()
+    @Published var storageFilter: StorageFilter = .all
+    /// Drive that "Move" sends things to
+    @Published var destination: String?
+    /// Items being moved or deleted right now
+    @Published var working: Set<String> = []
     /// Per-app memory over time, and the apps currently drawn as lines (with stable color slots)
     @Published var appHistory: [AppSample] = []
     @Published var chartApps: [ChartApp] = []
@@ -141,6 +149,10 @@ final class Model: ObservableObject {
             if page == .claude || tick % 3 == 0 {
                 let c = await Task.detached { ClaudeReader.scan() }.value
                 if c != claude { claude = c }
+            }
+            if page == .storage && storage.scanned {
+                let v = StorageReader.volumes()
+                if v != storage.volumes { storage.volumes = v; pickDestination() }
             }
             if tick % 3 == 0 {
                 processes = Array(procs.prefix(12))
@@ -215,6 +227,69 @@ final class Model: ObservableObject {
         }
         withAnimation(.exit) { claude.sessions.removeAll { $0.id == s.id } }
         showToast("Closed \(s.title), about \(mbText(s.totalMB)) freed")
+    }
+
+    var destinationVolume: Volume? { storage.volumes.first { $0.path == destination && $0.canReceive } }
+
+    private func pickDestination() {
+        if destinationVolume == nil { destination = storage.volumes.first(where: \.canReceive)?.path }
+    }
+
+    func rescan() async {
+        if page == .storage { await scanStorage() } else { await scan() }
+    }
+
+    func scanStorage() async {
+        busy = true
+        let snap = await Task.detached { StorageReader.scan() }.value
+        storage = snap
+        pickDestination()
+        busy = false
+    }
+
+    private func replace(_ item: StorageItem, with new: StorageItem?) {
+        withAnimation(.easeOutStrong()) {
+            if let new { storage.items = storage.items.map { $0.id == item.id ? new : $0 } }
+            else { storage.items.removeAll { $0.id == item.id } }
+            storage.volumes = StorageReader.volumes()
+        }
+    }
+
+    func moveStorage(_ item: StorageItem) async {
+        guard let volume = destinationVolume else { return }
+        working.insert(item.path)
+        let (dest, error) = await Task.detached { StorageReader.move(item, to: volume) }.value
+        working.remove(item.path)
+        if let dest {
+            var moved = item
+            moved.verdict = .moved(to: dest, connected: true)
+            moved.notes = []
+            replace(item, with: moved)
+            showToast("Moved \(item.name) to \(volume.name), \(mbText(item.mb)) freed")
+        } else {
+            showToast(error ?? "Couldn't move \(item.name)", warning: true)
+        }
+    }
+
+    func moveBack(_ item: StorageItem) async {
+        guard case .moved(let source, true) = item.verdict else { return }
+        working.insert(item.path)
+        let error = await Task.detached { StorageReader.moveBack(item, from: source) }.value
+        working.remove(item.path)
+        if let error { showToast(error, warning: true); return }
+        var back = item
+        back.verdict = .movable
+        replace(item, with: back)
+        showToast("\(item.name) is back on this Mac")
+    }
+
+    func clearStorage(_ item: StorageItem) async {
+        working.insert(item.path)
+        let error = await Task.detached { StorageReader.clear(item) }.value
+        working.remove(item.path)
+        if let error { showToast(error, warning: true); return }
+        replace(item, with: nil)
+        showToast("Deleted \(item.name), \(mbText(item.mb)) freed")
     }
 
     /// Colors follow the app, not its rank: an app keeps its color while it stays on the chart,
@@ -299,6 +374,7 @@ struct ContentView: View {
                 switch model.page {
                 case .memory: MemoryPage(model: model)
                 case .claude: ClaudePage(model: model)
+                case .storage: StoragePage(model: model)
                 case .startup: StartupPage(model: model)
                 case .apple: ApplePage(model: model)
                 }
@@ -311,7 +387,7 @@ struct ContentView: View {
                     if model.busy {
                         ProgressView().controlSize(.small).frame(width: 28)
                     } else {
-                        Button { Task { await model.scan() } } label: { Image(systemName: "arrow.clockwise") }
+                        Button { Task { await model.rescan() } } label: { Image(systemName: "arrow.clockwise") }
                             .help("Rescan")
                     }
                 }
@@ -343,7 +419,7 @@ struct ContentView: View {
         case .memory: return 0
         case .claude: return model.claude.sessions.reduce(0) { $0 + $1.tasks.filter { $0.kind == .command }.count } + model.claude.orphans.count
         case .startup: return model.items.filter { [.login, .agent, .daemon].contains($0.kind) && !$0.isBlocked && $0.isRunning }.count
-        case .apple: return 0
+        case .storage, .apple: return 0
         }
     }
 
