@@ -41,12 +41,13 @@ struct DebloatApp: App {
 }
 
 enum Page: String, CaseIterable, Identifiable, Hashable {
-    case memory, startup, apple
+    case memory, claude, startup, apple
     var id: Self { self }
 
     var title: String {
         switch self {
         case .memory: return "Memory"
+        case .claude: return "Claude"
         case .startup: return "Startup & Background"
         case .apple: return "Apple Services"
         }
@@ -55,6 +56,7 @@ enum Page: String, CaseIterable, Identifiable, Hashable {
     var symbol: String {
         switch self {
         case .memory: return "memorychip"
+        case .claude: return "sparkle"
         case .startup: return "power"
         case .apple: return "apple.logo"
         }
@@ -80,6 +82,7 @@ final class Model: ObservableObject {
     @Published var samples: [MemorySample] = []
     @Published var processes: [ProcessMemory] = []
     @Published var leftovers: [ProcessMemory] = []
+    @Published var claude = ClaudeSnapshot()
     /// Per-app memory over time, and the apps currently drawn as lines (with stable color slots)
     @Published var appHistory: [AppSample] = []
     @Published var chartApps: [ChartApp] = []
@@ -135,6 +138,10 @@ final class Model: ObservableObject {
             appHistory.append(AppSample(date: Date(), mb: Dictionary(procs.map { ($0.name, $0.mb) }, uniquingKeysWith: +)))
             if appHistory.count > 150 { appHistory.removeFirst(appHistory.count - 150) }
             updateChartApps(Array(procs.prefix(5)).map(\.name))
+            if page == .claude || tick % 3 == 0 {
+                let c = await Task.detached { ClaudeReader.scan() }.value
+                if c != claude { claude = c }
+            }
             if tick % 3 == 0 {
                 processes = Array(procs.prefix(12))
                 leftovers = procs.filter { $0.leftover && $0.mb > 0 }
@@ -174,6 +181,40 @@ final class Model: ObservableObject {
         }
         showToast(targets.count == 1 ? "Stopped \(targets[0].name)'s leftovers, \(mbText(mb)) freed"
                                      : "Stopped leftovers from \(targets.count) apps, \(mbText(mb)) freed")
+    }
+
+    /// Quits an app the normal way (it can save its work); plain processes get SIGTERM.
+    func quit(_ p: ProcessMemory) {
+        let app = p.appPath.flatMap { path in NSWorkspace.shared.runningApplications.first { $0.bundleURL?.path == path } }
+        if let app { app.terminate() } else { for pid in p.pids { kill(pid, SIGTERM) } }
+        withAnimation(.exit) { processes.removeAll { $0.name == p.name } }
+        showToast("Quit \(p.name), about \(mbText(p.mb)) freed")
+    }
+
+    func stopClaudeTasks(_ tasks: [ClaudeTask]) {
+        for t in tasks { for pid in t.pids { kill(pid, SIGTERM) } }
+        let ids = Set(tasks.map(\.id))
+        withAnimation(.exit) {
+            claude.orphans.removeAll { ids.contains($0.id) }
+            for i in claude.sessions.indices {
+                let s = claude.sessions[i]
+                claude.sessions[i] = ClaudeSession(id: s.id, kind: s.kind, args: s.args, cwd: s.cwd, mb: s.mb, elapsed: s.elapsed,
+                                                   tasks: s.tasks.filter { !ids.contains($0.id) })
+            }
+        }
+        let mb = tasks.reduce(0) { $0 + $1.mb }
+        showToast(tasks.count == 1 ? "Stopped \(tasks[0].command.prefix(40)), \(mbText(mb)) freed" : "Stopped \(tasks.count) tasks, \(mbText(mb)) freed")
+    }
+
+    func stopClaudeSession(_ s: ClaudeSession) {
+        if s.kind == .desktop {
+            NSRunningApplication(processIdentifier: s.id)?.terminate()
+        } else {
+            for t in s.tasks { for pid in t.pids { kill(pid, SIGTERM) } }
+            kill(s.id, SIGTERM)
+        }
+        withAnimation(.exit) { claude.sessions.removeAll { $0.id == s.id } }
+        showToast("Closed \(s.title), about \(mbText(s.totalMB)) freed")
     }
 
     /// Colors follow the app, not its rank: an app keeps its color while it stays on the chart,
@@ -257,6 +298,7 @@ struct ContentView: View {
             Group {
                 switch model.page {
                 case .memory: MemoryPage(model: model)
+                case .claude: ClaudePage(model: model)
                 case .startup: StartupPage(model: model)
                 case .apple: ApplePage(model: model)
                 }
@@ -299,6 +341,7 @@ struct ContentView: View {
     private func badge(for page: Page) -> Int {
         switch page {
         case .memory: return 0
+        case .claude: return model.claude.sessions.reduce(0) { $0 + $1.tasks.filter { $0.kind == .command }.count } + model.claude.orphans.count
         case .startup: return model.items.filter { [.login, .agent, .daemon].contains($0.kind) && !$0.isBlocked && $0.isRunning }.count
         case .apple: return 0
         }

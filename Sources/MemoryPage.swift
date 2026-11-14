@@ -19,12 +19,12 @@ struct MemoryPage: View {
                 }
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 16) {
-                        ProcessesCard(processes: model.processes)
+                        ProcessesCard(model: model)
                         SavingsCard(model: model)
                     }
                     .frame(minWidth: 700)
                     VStack(spacing: 16) {
-                        ProcessesCard(processes: model.processes)
+                        ProcessesCard(model: model)
                         SavingsCard(model: model)
                     }
                 }
@@ -478,21 +478,32 @@ struct BarRow: View {
 }
 
 struct ProcessesCard: View {
-    let processes: [ProcessMemory]
+    @ObservedObject var model: Model
 
     var body: some View {
+        let processes = model.processes
         let top = processes.first?.mb ?? 1
 
         Card {
             VStack(alignment: .leading, spacing: 12) {
-                CardHeader(title: "Using memory now", subtitle: "Helpers are counted under their app.")
+                CardHeader(title: "Using memory now", subtitle: "Helpers are counted under their app. Quitting an app with ✕ works like ⌘Q: it can still ask to save your work.")
                 if processes.isEmpty {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 80)
                 }
                 ForEach(processes) { p in
-                    BarRow(icon: AnyView(ItemIcon(appPath: p.appPath, symbol: "gearshape", size: 20)),
-                           title: p.leftover ? "\(p.name) (closed, extensions only)" : p.name, value: mbText(p.mb),
-                           fraction: Double(p.mb) / Double(max(top, 1)), color: .seriesApp)
+                    HStack(spacing: 8) {
+                        BarRow(icon: AnyView(ItemIcon(appPath: p.appPath, symbol: "gearshape", size: 20)),
+                               title: p.leftover ? "\(p.name) (closed, extensions only)" : p.name, value: mbText(p.mb),
+                               fraction: Double(p.mb) / Double(max(top, 1)), color: .seriesApp)
+                        if p.canQuit {
+                            Button { model.quit(p) } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.quiet)
+                                .foregroundStyle(.secondary)
+                                .help("Quit \(p.name)")
+                        } else {
+                            Color.clear.frame(width: 26, height: 1)
+                        }
+                    }
                 }
             }
         }

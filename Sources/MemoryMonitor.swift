@@ -24,6 +24,12 @@ struct ProcessMemory: Identifiable {
     let pids: [Int32]
     /// Its app isn't open, but widgets or extensions from it are still running
     var leftover = false
+
+    /// Only apps from the Applications folders can be quit from here, never macOS itself or Debloat
+    var canQuit: Bool {
+        guard let appPath, appPath != Bundle.main.bundlePath else { return false }
+        return appPath.hasPrefix("/Applications/") || appPath.hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path + "/Applications/")
+    }
 }
 
 enum MemoryReader {

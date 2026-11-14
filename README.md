@@ -12,6 +12,8 @@ A small native macOS app (SwiftUI, macOS 14+, Apple Silicon + Intel) backed by a
 
 - **Live memory view.** Usage every 2 seconds in Activity Monitor's terms (App, Wired, Compressed, Cached files, Free, Swap), memory pressure, and a 5-minute history you can hover — per app, as a total, or as a full breakdown.
 - **Finds leftovers from closed apps.** Widgets, notification and Siri extensions keep running after you quit an app. Debloat lists them and stops them in one click (macOS restarts one if it's actually needed).
+- **Quit memory-heavy apps.** The "Using memory now" list has a ✕ to quit any app in your Applications folder, the same as ⌘Q.
+- **See what Claude is doing.** A Claude page lists Claude Code sessions and the Claude app, the shell commands and MCP servers each is running, and background commands left behind by sessions that ended — each with a Stop button.
 - **Startup & background control.** Every login item and every launch agent/daemon other apps installed, with whether it's running and how much memory it uses. Flip the switch off and it stops starting on its own; the app itself still opens normally.
 - **Apple services, explained.** Spotlight indexing, Photos analysis, Music library, News, Game Center, Siri parts… each with a plain-English description. ⚠️ marks the ones that turn off something you'd notice.
 - **Shows what you saved.** Blocked items remember the most memory they were seen using, so you can see roughly how much your blocks keep free.
@@ -23,15 +25,20 @@ A small native macOS app (SwiftUI, macOS 14+, Apple Silicon + Intel) backed by a
 |---|---|
 | <img src="docs/screenshots/startup-light.png" alt="Startup and Background page in light mode"> | <img src="docs/screenshots/apple-dark.png" alt="Apple Services page in dark mode"> |
 
-| Memory breakdown | Total vs. capacity |
+| Claude | Memory breakdown |
 |---|---|
-| <img src="docs/screenshots/memory-breakdown-light.png" alt="Memory breakdown chart"> | <img src="docs/screenshots/memory-total-dark.png" alt="Total memory chart"> |
+| <img src="docs/screenshots/claude-light.png" alt="Claude page listing sessions and their running commands"> | <img src="docs/screenshots/memory-breakdown-light.png" alt="Memory breakdown chart"> |
+
+| Total vs. capacity | |
+|---|---|
+| <img src="docs/screenshots/memory-total-dark.png" alt="Total memory chart"> | |
 
 ## Pages
 
 | Page | What it shows |
 |---|---|
 | **Memory** | Live usage (updates every 2 s): a stacked bar and legend in Activity Monitor's terms, memory pressure, a 5-minute history chart you can hover, leftovers from closed apps, the apps using the most memory right now, and how much memory your blocks keep free |
+| **Claude** | Every Claude Code session (folder, flags, uptime, memory) and the Claude app, with the commands and MCP servers each one is running. Stop a single command, end a whole session, or clean up commands left running after a session closed |
 | **Startup & Background** | Login items and background helpers from other apps. Switch **on** = allowed to start on its own, like System Settings' "Allow in the Background" |
 | **Apple Services** | Built-in features (Spotlight) and macOS helpers (Siri, Photos analysis, Music library, News…). ⚠️ marks ones that turn off something you'd notice |
 
@@ -39,7 +46,7 @@ Every row shows whether the item is running, how much memory it uses now, or, if
 roughly how much it would use. Filter a page by text or by **All / Running / Blocked**.
 Changes collect in a bar at the bottom until you hit **Apply** (or **Revert**). 🔒 items ask for your Mac password when applied.
 
-**Shortcuts:** ⌘1 / ⌘2 / ⌘3 switch pages, ⌘R rescans, Return applies pending changes.
+**Shortcuts:** ⌘1–⌘4 switch pages, ⌘R rescans, Return applies pending changes.
 
 ## Install
 
@@ -90,6 +97,8 @@ Sources/DebloatApp.swift     Entry point, data model, window, pending-changes ba
 Sources/MemoryPage.swift     Memory page: overview bar, history chart, top processes, savings
 Sources/StartupPage.swift    Startup & Background and Apple Services pages, rows, banners
 Sources/Theme.swift          Colors, motion curves, button styles, cards, icons
+Sources/ClaudePage.swift     Claude page: sessions, their running commands and MCP servers
+Sources/ClaudeMonitor.swift  Finds Claude sessions and their child processes
 Sources/MemoryMonitor.swift  Reads system memory and per-process usage
 Sources/Engine.swift         Runs the shell engine and parses its scan output
 Sources/Snapshot.swift       --snapshot mode for offscreen UI checks

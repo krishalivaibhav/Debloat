@@ -17,7 +17,7 @@ enum Snapshot {
             await model.scan()
             try? await Task.sleep(nanoseconds: 20_000_000_000)
 
-            let shots: [(Page, ChartMode)] = [(.memory, .apps), (.memory, .total), (.memory, .breakdown), (.startup, .apps), (.apple, .apps)]
+            let shots: [(Page, ChartMode)] = [(.memory, .apps), (.memory, .total), (.memory, .breakdown), (.claude, .apps), (.startup, .apps), (.apple, .apps)]
             for (page, mode) in shots {
                 for (name, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
                     model.page = page
